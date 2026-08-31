@@ -12,6 +12,7 @@ import {
   LogOut,
   ChevronDown,
   X,
+  Menu,
   Edit2,
   Gift,
   Search,
@@ -337,15 +338,39 @@ export default function App() {
   );
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', backgroundColor: '#F4F6FB', color: '#1e293b', fontFamily: 'sans-serif' }}>
+    <div style={{ display: 'flex', minHeight: '100vh', backgroundColor: '#F4F6FB', color: '#1e293b', fontFamily: 'sans-serif', position: 'relative' }}>
       
-      {/* Sidebar Overlay */}
+      {/* Sidebar Mobile Overlay Backdrop */}
       {sidebarOpen && (
-        <div onClick={() => setSidebarOpen(false)} style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 40 }} />
+        <div
+          onClick={() => setSidebarOpen(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0,0,0,0.6)',
+            zIndex: 45
+          }}
+        />
       )}
 
-      {/* Left Sidebar */}
-      <aside style={{ width: '260px', backgroundColor: '#0F1123', color: '#94a3b8', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', flexShrink: 0, zIndex: 50 }}>
+      {/* Left Sidebar (Desktop Static + Mobile Drawer) */}
+      <aside
+        style={{
+          width: '260px',
+          backgroundColor: '#0F1123',
+          color: '#94a3b8',
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'space-between',
+          flexShrink: 0,
+          zIndex: 50,
+          position: typeof window !== 'undefined' && window.innerWidth < 768 ? 'fixed' : 'relative',
+          top: 0,
+          bottom: 0,
+          left: sidebarOpen || (typeof window !== 'undefined' && window.innerWidth >= 768) ? 0 : '-280px',
+          transition: 'left 0.25s ease'
+        }}
+      >
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '24px 20px', borderBottom: '1px solid #1e293b' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -355,6 +380,18 @@ export default function App() {
               <span style={{ fontWeight: 800, color: '#ffffff', fontSize: '15px' }}>WEBTO AI</span>
               <span style={{ fontSize: '10px', fontWeight: 800, backgroundColor: '#4338CA', color: '#e0e7ff', padding: '2px 8px', borderRadius: '999px' }}>ADMIN</span>
             </div>
+            <button
+              onClick={() => setSidebarOpen(false)}
+              style={{
+                display: typeof window !== 'undefined' && window.innerWidth < 768 ? 'flex' : 'none',
+                background: 'transparent',
+                border: 'none',
+                color: '#94a3b8',
+                cursor: 'pointer'
+              }}
+            >
+              <X size={18} />
+            </button>
           </div>
 
           <nav style={{ padding: '16px 12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -399,23 +436,41 @@ export default function App() {
 
       {/* Main Panel */}
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflowY: 'auto' }}>
-        <header style={{ backgroundColor: '#ffffff', borderBottom: '1px solid #e2e8f0', padding: '16px 28px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 30 }}>
-          <h1 style={{ fontSize: '20px', fontWeight: 800, color: '#0f172a', margin: 0 }}>{activeTab}</h1>
+        <header style={{ backgroundColor: '#ffffff', borderBottom: '1px solid #e2e8f0', padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 30 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <button
+              onClick={() => setSidebarOpen(true)}
+              style={{
+                display: typeof window !== 'undefined' && window.innerWidth < 768 ? 'flex' : 'none',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '6px',
+                borderRadius: '8px',
+                border: '1px solid #e2e8f0',
+                backgroundColor: '#f8fafc',
+                cursor: 'pointer',
+                color: '#0f172a'
+              }}
+            >
+              <Menu size={18} />
+            </button>
+            <h1 style={{ fontSize: '18px', fontWeight: 800, color: '#0f172a', margin: 0 }}>{activeTab}</h1>
+          </div>
           
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <button
               onClick={() => setShowGlobalModal(true)}
-              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 14px', backgroundColor: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: '10px', fontSize: '12px', fontWeight: 700, color: '#4338ca', cursor: 'pointer' }}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 12px', backgroundColor: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: '10px', fontSize: '12px', fontWeight: 700, color: '#4338ca', cursor: 'pointer' }}
             >
-              <Gift size={15} />
-              Give Global Free Credits
+              <Gift size={14} />
+              <span>Give Global Credits</span>
             </button>
             <button
               onClick={fetchAllData}
-              style={{ padding: '8px 12px', borderRadius: '10px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', fontWeight: 600 }}
+              style={{ padding: '8px 10px', borderRadius: '10px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 600 }}
             >
               <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
-              Sync DB
+              <span>Sync</span>
             </button>
           </div>
         </header>
@@ -426,10 +481,10 @@ export default function App() {
           </div>
         )}
 
-        <div style={{ padding: '24px 28px', display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '1400px', width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+        <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '1400px', width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
           
           {/* Metric Cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '14px' }}>
             <div style={{ backgroundColor: '#ffffff', padding: '18px', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
               <span style={{ fontSize: '12px', fontWeight: 600, color: '#64748b' }}>Total Users</span>
               <p style={{ fontSize: '24px', fontWeight: 900, color: '#0f172a', margin: '8px 0' }}>{metrics.totalUsers}</p>
@@ -451,7 +506,7 @@ export default function App() {
 
           {/* VIEW: Users & Quota Control */}
           {(activeTab === 'Dashboard' || activeTab === 'Users' || activeTab === 'Credits') && (
-            <div style={{ backgroundColor: '#ffffff', padding: '24px', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
+            <div style={{ backgroundColor: '#ffffff', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
                 <div>
                   <h2 style={{ fontSize: '15px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Registered Users & Live Credit Quota</h2>
@@ -471,7 +526,7 @@ export default function App() {
               </div>
 
               <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '12px' }}>
+                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '12px', minWidth: '550px' }}>
                   <thead>
                     <tr style={{ borderBottom: '1px solid #f1f5f9', color: '#94a3b8', fontSize: '11px' }}>
                       <th style={{ paddingBottom: '10px' }}>User Details</th>
@@ -527,7 +582,7 @@ export default function App() {
 
           {/* VIEW: Credit Packages Price & Quota Editor */}
           {(activeTab === 'Dashboard' || activeTab === 'Credit Packages') && (
-            <div style={{ backgroundColor: '#ffffff', padding: '24px', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
+            <div style={{ backgroundColor: '#ffffff', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
                 <div>
                   <h2 style={{ fontSize: '15px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Dynamic Package & Pricing Editor</h2>
@@ -535,7 +590,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '14px' }}>
                 {packages.map((pkg) => (
                   <div key={pkg.id} style={{ padding: '20px', borderRadius: '16px', border: pkg.popular ? '2px solid #6366f1' : '1px solid #e2e8f0', backgroundColor: '#f8fafc', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
                     <div>
@@ -563,7 +618,7 @@ export default function App() {
 
           {/* VIEW: Customer Purchases & Transactions Ledger Table */}
           {(activeTab === 'Dashboard' || activeTab === 'Payments') && (
-            <div style={{ backgroundColor: '#ffffff', padding: '24px', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
+            <div style={{ backgroundColor: '#ffffff', padding: '20px', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
                 <div>
                   <h2 style={{ fontSize: '15px', fontWeight: 800, color: '#0f172a', margin: 0 }}>Customer Purchases & Payment Ledger</h2>
@@ -572,7 +627,7 @@ export default function App() {
               </div>
 
               <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '12px' }}>
+                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '12px', minWidth: '550px' }}>
                   <thead>
                     <tr style={{ borderBottom: '1px solid #f1f5f9', color: '#94a3b8', fontSize: '11px' }}>
                       <th style={{ paddingBottom: '10px' }}>Customer / Email</th>
