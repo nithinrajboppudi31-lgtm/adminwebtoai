@@ -1,0 +1,108 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum AuthProvider {
+  LOCAL
+  GOOGLE
+}
+
+model User {
+  id                   String               @id @default(uuid())
+  name                 String?
+  email                String               @unique
+  password             String?
+  resetPasswordToken   String?
+  resetPasswordExpires DateTime?
+  profileImage         String?
+  authProvider         AuthProvider         @default(LOCAL)
+  providerAccountId    String?
+  role                 Role                 @default(USER)
+  credits              Int                  @default(0)
+  freeBuildsUsed       Int                  @default(0)
+  freeBuildsTotal      Int                  @default(3)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  projects             Project[]
+  creditTransactions   CreditTransaction[]
+  payments             Payment[]
+}
+
+model Project {
+  id              String           @id @default(uuid())
+  userId          String
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name            String
+  description     String?
+  type            String           @default("FULL_STACK")
+  entryHtml       String?          @db.Text
+  isDeployed      Boolean          @default(false)
+  isPublic        Boolean          @default(false)
+  deployedUrl     String?
+  slug            String?          @unique
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([userId])
+}
+
+model CreditPackage {
+  id         String    @id @default(uuid())
+  name       String
+  credits    Int
+  priceInInr Int
+  popular    Boolean   @default(false)
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
+model CreditTransaction {
+  id           String          @id @default(uuid())
+  userId       String
+  type         String
+  amount       Int
+  balanceAfter Int
+  description  String
+  createdAt    DateTime        @default(now())
+
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Payment {
+  id                String         @id @default(uuid())
+  userId            String
+  razorpayOrderId   String?        @unique
+  razorpayPaymentId String?        @unique
+  amount            Int
+  currency          String         @default("INR")
+  status            String         @default("PENDING")
+  creditsGranted    Int            @default(0)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Deployment {
+  id          String   @id @default(uuid())
+  projectId   String
+  status      String   @default("READY")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
