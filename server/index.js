@@ -177,8 +177,17 @@ async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingC
     });
   }
 
-  const url = `[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$){apiKey}`;
+    const endpoint = [
+    'https:',
+    '',
+    'generativelanguage.googleapis.com',
+    'v1beta',
+    'models',
+    'gemini-1.5-flash:generateContent'
+  ].join('/');
 
+  const url = `${endpoint}?key=${encodeURIComponent(apiKey)}`;
+  
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -223,8 +232,17 @@ INSTRUCTIONS:
 2. Always end with 3 suggestion chips strictly formatted as: [CHIPS: Option 1 | Option 2 | Option 3]
 `;
 
-  const url = `[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$){apiKey}`;
+    const endpoint = [
+    'https:',
+    '',
+    'generativelanguage.googleapis.com',
+    'v1beta',
+    'models',
+    'gemini-1.5-flash:generateContent'
+  ].join('/');
 
+  const url = `${endpoint}?key=${encodeURIComponent(apiKey)}`;
+  
   const response = await fetch(url, {
     method: 'POST',
     headers: {
