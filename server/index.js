@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import { Resend } from 'resend';
 import { PrismaClient } from '@prisma/client';
+import { GoogleGenAI, Type } from '@google/genai';
 
 dotenv.config();
 
@@ -14,7 +15,10 @@ const prisma = new PrismaClient();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'webto_ai_super_secure_jwt_secret_key_2026';
 
-// Password hash helper using Node's native crypto module
+// Gemini AI Client
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+// Native password hashing
 const hashPassword = (pw) => crypto.createHash('sha256').update(pw).digest('hex');
 
 const allowedOrigins = [
@@ -43,8 +47,8 @@ app.use(
   })
 );
 
-app.use(express.json({ limit: '25mb' }));
-app.use(express.urlencoded({ limit: '25mb', extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Health Check
 app.get('/health', (req, res) => {
@@ -52,7 +56,7 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send('WEBTO AI Backend & Admin Server running!');
+  res.send('WEBTO AI Backend & Synthesis Engine running!');
 });
 
 // Resend Email Service
@@ -110,16 +114,146 @@ const authenticate = async (req, res, next) => {
 };
 
 // ============================================================
-// 1. MAIN APP USER AUTHENTICATION (Login, Register, OAuth)
+// AI SYNTHESIS HELPERS
 // ============================================================
+function cleanAndParseJSON(rawText) {
+  let cleaned = (rawText || '').trim();
+  cleaned = cleaned.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
 
-// POST /api/auth/login
+  try {
+    return JSON.parse(cleaned);
+  } catch (err) {
+    const sanitized = cleaned.replace(/"((?:\\.|[^"\\])*)"/gs, (match) => {
+      return match
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r')
+        .replace(/\t/g, '\\t');
+    });
+    return JSON.parse(sanitized);
+  }
+}
+
+const SYSTEM_PROMPT = `
+You are the Lead Full-Stack Software Architect and UI/UX Designer for WEBTO AI.
+You generate fully-formed, production-grade, highly interactive single-page full-stack web applications, marketplaces, platforms, and dashboards.
+
+CRITICAL ARCHITECTURE RULES:
+1. "entryHtml": MUST be a 100% complete, standalone HTML5 document that runs seamlessly out of the box in an iframe sandbox without external build tools.
+   - Include Tailwind CSS CDN: <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
+   - Include FontAwesome 6 CDN: <link rel="stylesheet" href="[https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css](https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css)" />
+   - Use Google Fonts (Inter or Plus Jakarta Sans).
+   - Use high-resolution Unsplash image URLs.
+2. FULL-STACK APPLICATION LOGIC & REAL-TIME STATE:
+   - Full in-memory interactive JavaScript state (window.state = { cart: [], items: [], filter: 'all' }) with live DOM updating.
+   - Working drawers, checkout simulations, quantity incrementers, dynamic tabs, and modals.
+3. "files": Provide modular files (index.html, app.js, styles.css) for display in the code viewer.
+4. Return strict JSON matching the schema.
+`;
+
+async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingCode = '', image = null) {
+  let fullPrompt = `${SYSTEM_PROMPT}\n\nProject Architecture Type: ${projectType}\nUser Requirements / App Features:\n${prompt}`;
+  if (existingCode) {
+    fullPrompt += `\n\nExisting Application Code to update/enhance:\n${existingCode.slice(0, 15000)}`;
+  }
+
+  const parts = [{ text: fullPrompt }];
+
+  if (image) {
+    let mimeType = 'image/png';
+    let base64Data = image;
+
+    if (image.startsWith('data:')) {
+      const matches = image.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+      if (matches && matches.length === 3) {
+        mimeType = matches[1];
+        base64Data = matches[2];
+      } else {
+        base64Data = image.split(',')[1] || image;
+      }
+    }
+
+    parts.unshift({
+      inlineData: {
+        mimeType: mimeType,
+        data: base64Data,
+      },
+    });
+  }
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: [{ role: 'user', parts }],
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          entryHtml: {
+            type: Type.STRING,
+            description: 'Complete standalone HTML file with Tailwind CSS CDN and functional JS state.',
+          },
+          files: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING },
+                path: { type: Type.STRING },
+                content: { type: Type.STRING },
+              },
+              required: ['name', 'path', 'content'],
+            },
+          },
+        },
+        required: ['entryHtml', 'files'],
+      },
+    },
+  });
+
+  return cleanAndParseJSON(response.text);
+}
+
+async function generateChatReply(projectName, projectType, messages) {
+  const formattedHistory = messages
+    .map((m) => `${m.role === 'user' ? 'User' : 'Lead Architect'}: ${m.content}`)
+    .join('\n');
+
+  const prompt = `
+You are the Lead Architect for WEBTO AI. Interview the user to plan and design the best web application.
+Project: "${projectName || 'Web App'}" (${projectType || 'FULL_STACK'})
+
+Conversation history:
+${formattedHistory}
+
+INSTRUCTIONS:
+1. Ask 1-2 focused questions about key pages, specific features, or styling.
+2. Keep responses concise (under 3 sentences).
+3. Always include 3 suggestion chips at the end formatted strictly as: [CHIPS: Option 1 | Option 2 | Option 3]
+`;
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+  });
+
+  const replyText = response.text || '';
+  let chips = [];
+  const chipMatch = replyText.match(/\[CHIPS:\s*(.*?)\]/i);
+  if (chipMatch) {
+    chips = chipMatch[1].split('|').map((c) => c.trim());
+  }
+
+  const cleanedMessage = replyText.replace(/\[CHIPS:\s*.*?\]/i, '').trim();
+  return { message: cleanedMessage, chips };
+}
+
+// ============================================================
+// 1. AUTHENTICATION ROUTES
+// ============================================================
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email) {
-      return res.status(400).json({ error: 'Email address is required.' });
-    }
+    if (!email) return res.status(400).json({ error: 'Email address is required.' });
 
     const cleanEmail = email.trim().toLowerCase();
     let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
@@ -138,7 +272,6 @@ app.post('/api/auth/login', async (req, res) => {
       });
     } else if (password && user.password) {
       const hashedAttempt = hashPassword(password);
-      // Support sha256 hash or direct match
       if (user.password !== hashedAttempt && user.password !== password && !user.password.startsWith('$2')) {
         return res.status(401).json({ error: 'Invalid password. Please check your credentials.' });
       }
@@ -147,18 +280,14 @@ app.post('/api/auth/login', async (req, res) => {
     const token = jwt.sign({ userId: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
     return res.status(200).json({ success: true, token, user: formatSafeUser(user) });
   } catch (err) {
-    console.error('Login error:', err);
-    return res.status(500).json({ error: 'Login failed. Please try again.' });
+    return res.status(500).json({ error: 'Login failed.' });
   }
 });
 
-// POST /api/auth/register
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { email, name, password, authProvider } = req.body;
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required.' });
-    }
+    if (!email) return res.status(400).json({ error: 'Email is required.' });
 
     const cleanEmail = email.trim().toLowerCase();
     let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
@@ -181,12 +310,10 @@ app.post('/api/auth/register', async (req, res) => {
     const token = jwt.sign({ userId: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
     return res.status(200).json({ success: true, token, user: formatSafeUser(user) });
   } catch (err) {
-    console.error('Register error:', err);
     return res.status(500).json({ error: 'Registration failed.' });
   }
 });
 
-// POST /api/auth/oauth
 app.post('/api/auth/oauth', async (req, res) => {
   try {
     const { email, name, provider } = req.body;
@@ -213,18 +340,16 @@ app.post('/api/auth/oauth', async (req, res) => {
     const token = jwt.sign({ userId: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
     return res.status(200).json({ success: true, token, user: formatSafeUser(user) });
   } catch (error) {
-    console.error('OAuth fallback error:', error);
-    return res.status(500).json({ error: 'OAuth authentication failed.' });
+    return res.status(500).json({ error: 'OAuth failed.' });
   }
 });
 
-// POST /api/auth/google
 app.post('/api/auth/google', async (req, res) => {
   try {
     const { access_token } = req.body;
     if (!access_token) return res.status(400).json({ error: 'Access token is required' });
 
-    const googleRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+    const googleRes = await fetch('[https://www.googleapis.com/oauth2/v3/userinfo](https://www.googleapis.com/oauth2/v3/userinfo)', {
       headers: { Authorization: `Bearer ${access_token}` },
     });
 
@@ -234,7 +359,6 @@ app.post('/api/auth/google', async (req, res) => {
     const cleanEmail = profile.email.trim().toLowerCase();
 
     let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
-
     if (!user) {
       const dummyPass = hashPassword(crypto.randomBytes(16).toString('hex'));
       user = await prisma.user.create({
@@ -253,12 +377,10 @@ app.post('/api/auth/google', async (req, res) => {
     const token = jwt.sign({ userId: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
     return res.status(200).json({ success: true, token, user: formatSafeUser(user) });
   } catch (error) {
-    console.error('Google auth error:', error);
     return res.status(500).json({ error: 'Google authentication failed' });
   }
 });
 
-// POST /api/auth/github
 app.post('/api/auth/github', async (req, res) => {
   try {
     const { code } = req.body;
@@ -267,60 +389,26 @@ app.post('/api/auth/github', async (req, res) => {
     const clientId = process.env.GITHUB_CLIENT_ID;
     const clientSecret = process.env.GITHUB_CLIENT_SECRET;
 
-    if (!clientId || !clientSecret) {
-      return res.status(500).json({ error: 'GitHub OAuth credentials not configured on backend.' });
-    }
-
-    const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+    const tokenRes = await fetch('[https://github.com/login/oauth/access_token](https://github.com/login/oauth/access_token)', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        'User-Agent': 'WEBTOAI-App',
-      },
-      body: JSON.stringify({
-        client_id: clientId.trim(),
-        client_secret: clientSecret.trim(),
-        code: code.trim(),
-      }),
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code }),
     });
 
     const tokenData = await tokenRes.json();
     if (tokenData.error || !tokenData.access_token) {
-      return res.status(401).json({ error: tokenData.error_description || 'Failed to exchange GitHub authorization code.' });
+      return res.status(401).json({ error: 'Failed to exchange GitHub authorization code.' });
     }
 
-    const userRes = await fetch('https://api.github.com/user', {
-      headers: {
-        Authorization: `Bearer ${tokenData.access_token}`,
-        'User-Agent': 'WEBTOAI-App',
-      },
+    const userRes = await fetch('[https://api.github.com/user](https://api.github.com/user)', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}`, 'User-Agent': 'WEBTOAI' },
     });
 
     const ghUser = await userRes.json();
-    let email = ghUser.email;
-
-    if (!email) {
-      const emailRes = await fetch('https://api.github.com/user/emails', {
-        headers: {
-          Authorization: `Bearer ${tokenData.access_token}`,
-          'User-Agent': 'WEBTOAI-App',
-        },
-      });
-      const emails = await emailRes.json();
-      if (Array.isArray(emails)) {
-        const primary = emails.find((e) => e.primary && e.verified);
-        email = primary ? primary.email : emails[0]?.email;
-      }
-    }
-
-    if (!email) {
-      email = `${ghUser.login}@users.noreply.github.com`;
-    }
+    let email = ghUser.email || `${ghUser.login}@users.noreply.github.com`;
 
     const cleanEmail = email.trim().toLowerCase();
     let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
-
     if (!user) {
       const dummyPass = hashPassword(crypto.randomBytes(16).toString('hex'));
       user = await prisma.user.create({
@@ -339,8 +427,7 @@ app.post('/api/auth/github', async (req, res) => {
     const token = jwt.sign({ userId: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
     return res.status(200).json({ success: true, token, user: formatSafeUser(user) });
   } catch (error) {
-    console.error('GitHub auth error:', error);
-    return res.status(500).json({ error: error.message || 'GitHub authentication failed' });
+    return res.status(500).json({ error: 'GitHub authentication failed' });
   }
 });
 
@@ -349,16 +436,179 @@ app.get('/api/auth/me', authenticate, (req, res) => {
 });
 
 // ============================================================
-// 2. ADMIN PANEL ROUTES
+// 2. PROJECT CREATION & WORKSPACE ROUTES
 // ============================================================
 
+// POST /api/projects (Triggers when clicking "Start Building")
+app.post('/api/projects', authenticate, async (req, res) => {
+  try {
+    const { name, description, type } = req.body;
+    const userId = req.user.id;
+
+    const project = await prisma.project.create({
+      data: {
+        name: name || 'New Application',
+        description: description || '',
+        type: type || 'FULL_STACK',
+        userId: userId === 'admin' ? undefined : userId,
+        entryHtml: '',
+        files: [],
+      },
+    });
+
+    return res.status(201).json({ success: true, project });
+  } catch (error) {
+    console.error('Create project error:', error);
+    return res.status(500).json({ error: 'Failed to create project in database.' });
+  }
+});
+
+// GET /api/projects/:id (Loads project into Workspace)
+app.get('/api/projects/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const project = await prisma.project.findUnique({
+      where: { id },
+      include: { user: true },
+    });
+
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found.' });
+    }
+
+    return res.json({ project });
+  } catch (error) {
+    return res.status(500).json({ error: 'Failed to retrieve project.' });
+  }
+});
+
+// POST /api/generate/:id (Runs Gemini synthesis and updates project)
+app.post('/api/generate/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { prompt, image } = req.body;
+
+    // Check Credits
+    if (req.user.role !== 'ADMIN') {
+      const remaining = Math.max(0, (req.user.freeBuildsTotal ?? 3) - (req.user.freeBuildsUsed ?? 0)) + (req.user.credits || 0);
+      if (remaining <= 0) {
+        return res.status(403).json({ error: 'No build credits remaining. Please upgrade or refill.' });
+      }
+    }
+
+    const project = await prisma.project.findUnique({ where: { id } });
+    if (!project) return res.status(404).json({ error: 'Project not found.' });
+
+    const aiResult = await generateProjectCode(prompt, project.type, project.entryHtml, image);
+
+    const updatedProject = await prisma.project.update({
+      where: { id },
+      data: {
+        entryHtml: aiResult.entryHtml,
+        files: aiResult.files,
+        updatedAt: new Date(),
+      },
+    });
+
+    // Deduct user build credit
+    let updatedUser = req.user;
+    if (req.user.role !== 'ADMIN') {
+      updatedUser = await prisma.user.update({
+        where: { id: req.user.id },
+        data: { freeBuildsUsed: { increment: 1 } },
+      });
+    }
+
+    const finalCredits = Math.max(0, (updatedUser.freeBuildsTotal ?? 3) - (updatedUser.freeBuildsUsed ?? 0)) + (updatedUser.credits || 0);
+
+    return res.json({
+      success: true,
+      entryHtml: updatedProject.entryHtml,
+      files: updatedProject.files,
+      remainingCredits: finalCredits,
+    });
+  } catch (error) {
+    console.error('Synthesis error:', error);
+    return res.status(500).json({ error: error.message || 'AI generation failed' });
+  }
+});
+
+// POST /api/chat/:id (Architect Chat helper)
+app.post('/api/chat/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { messages } = req.body;
+    const project = await prisma.project.findUnique({ where: { id } });
+
+    const chatResponse = await generateChatReply(project?.name, project?.type, messages || []);
+    return res.json(chatResponse);
+  } catch (error) {
+    return res.status(500).json({ error: 'Chat synthesis failed.' });
+  }
+});
+
+// PATCH /api/projects/:id/visibility
+app.patch('/api/projects/:id/visibility', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isPublic } = req.body;
+
+    const project = await prisma.project.update({
+      where: { id },
+      data: { isPublic: !!isPublic },
+    });
+
+    return res.json({ success: true, isPublic: project.isPublic });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to update visibility.' });
+  }
+});
+
+// PATCH /api/projects/:id/seo
+app.patch('/api/projects/:id/seo', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, slug, description } = req.body;
+
+    const project = await prisma.project.update({
+      where: { id },
+      data: {
+        name: title,
+        slug: slug,
+        description: description,
+      },
+    });
+
+    return res.json({ success: true, project, entryHtml: project.entryHtml });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to update SEO metadata.' });
+  }
+});
+
+// POST /api/deploy/:id
+app.post('/api/deploy/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const project = await prisma.project.findUnique({ where: { id } });
+    if (!project) return res.status(404).json({ error: 'Project not found.' });
+
+    const deployedUrl = `[https://webtoai.vercel.app/preview/$](https://webtoai.vercel.app/preview/$){project.slug || project.id}`;
+    return res.json({ success: true, project, deployedUrl });
+  } catch (err) {
+    return res.status(500).json({ error: 'Deployment failed.' });
+  }
+});
+
+// ============================================================
+// 3. ADMIN PANEL & MANAGEMENT
+// ============================================================
 app.post('/api/admin/request-otp', async (req, res) => {
   try {
     const { email } = req.body;
     const adminEmail = (process.env.ADMIN_EMAIL || 'webtoai26@gmail.com').trim().toLowerCase();
 
     if (!email || email.trim().toLowerCase() !== adminEmail) {
-      return res.status(403).json({ error: 'Unauthorized: Not an admin email.' });
+      return res.status(403).json({ error: 'Unauthorized admin email.' });
     }
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -369,14 +619,14 @@ app.post('/api/admin/request-otp', async (req, res) => {
       await resend.emails.send({
         from: 'onboarding@resend.dev',
         to: [adminEmail],
-        subject: 'WEBTO AI Admin Access OTP',
-        html: `<p>Your Admin OTP is: <b>${otp}</b></p>`,
+        subject: 'WEBTO AI Admin OTP',
+        html: `<p>Your Admin OTP: <b>${otp}</b></p>`,
       });
     }
 
     return res.json({ success: true, message: 'OTP sent successfully.' });
   } catch (err) {
-    return res.status(500).json({ error: 'Failed to send OTP.' });
+    return res.status(500).json({ error: 'Failed to dispatch OTP.' });
   }
 });
 
@@ -440,37 +690,12 @@ const handleDashboardData = async (req, res) => {
       },
     });
   } catch (error) {
-    return res.status(500).json({ error: 'Failed to fetch dashboard data' });
+    return res.status(500).json({ error: 'Failed to fetch dashboard data.' });
   }
 };
 
 app.get('/api/admin/overview', handleDashboardData);
 app.get('/api/admin/dashboard-data', handleDashboardData);
-
-// Credit adjustments
-app.post('/api/admin/credits/global', async (req, res) => {
-  try {
-    const amount = parseInt(req.body.amount, 10) || 5;
-    await prisma.user.updateMany({ data: { freeBuildsTotal: { increment: amount } } });
-    return res.json({ success: true, message: `Granted ${amount} credits globally!` });
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to grant credits' });
-  }
-});
-
-app.post('/api/admin/credits/user', async (req, res) => {
-  try {
-    const { email, amount } = req.body;
-    const change = parseInt(amount, 10) || 0;
-    const updated = await prisma.user.update({
-      where: { email: email.trim().toLowerCase() },
-      data: { freeBuildsTotal: { increment: change } },
-    });
-    return res.json({ success: true, user: formatSafeUser(updated) });
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to adjust credits' });
-  }
-});
 
 // Packages
 app.get('/api/payments/packages', async (req, res) => {
@@ -483,7 +708,7 @@ app.get('/api/payments/packages', async (req, res) => {
 });
 app.get('/api/packages', (req, res) => res.redirect('/api/payments/packages'));
 
-// Start Server
+// Server Launch
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`WEBTO AI Full Backend running on port ${PORT}`);
+  console.log(`WEBTO AI Full Engine running on port ${PORT}`);
 });
