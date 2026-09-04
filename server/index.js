@@ -177,7 +177,7 @@ async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingC
     });
   }
 
-    const endpoint = [
+  const endpoint = [
     'https:',
     '',
     'generativelanguage.googleapis.com',
@@ -187,7 +187,7 @@ async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingC
   ].join('/');
 
   const url = `${endpoint}?key=${encodeURIComponent(apiKey)}`;
-  
+
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -211,6 +211,7 @@ async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingC
   const textOutput = data.candidates?.[0]?.content?.parts?.[0]?.text;
   return cleanAndParseJSON(textOutput);
 }
+
 
 async function generateChatReply(projectName, projectType, messages) {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
