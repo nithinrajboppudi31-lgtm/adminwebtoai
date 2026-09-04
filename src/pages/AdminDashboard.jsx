@@ -93,27 +93,55 @@ export default function AdminDashboard() {
     e.preventDefault();
     if (!selectedPkg) return;
     setSaveLoading(true);
+
+    const targetId = selectedPkg.id || selectedPkg.name.toLowerCase().split(' ')[0];
+    const newPriceVal = Number(editPrice);
+    const newCreditsVal = Number(editCredits);
+
+    // 1. Instantly update UI on screen so it never stays old
+    setCreditPackages((prev) =>
+      prev.map((pkg) => {
+        const pId = pkg.id || pkg.name.toLowerCase().split(' ')[0];
+        if (pId === targetId) {
+          return {
+            ...pkg,
+            price: `₹${newPriceVal}`,
+            priceVal: newPriceVal,
+            credits: `${newCreditsVal} Credits`,
+            creditsVal: newCreditsVal,
+          };
+        }
+        return pkg;
+      })
+    );
+
     try {
       const res = await fetch(`${BACKEND_URL}/api/admin/packages/update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          packageId: selectedPkg.id,
-          price: Number(editPrice),
-          credits: Number(editCredits),
+          packageId: targetId,
+          price: newPriceVal,
+          credits: newCreditsVal,
           name: selectedPkg.name,
         }),
       });
 
-      if (res.ok) {
-        setShowPackageModal(false);
-        await loadDashboardData();
-      } else {
-        alert('Failed to save package update.');
+      const result = await res.json();
+
+      if (!res.ok || result.error) {
+        throw new Error(result.error || 'Server rejected package update');
       }
+
+      setShowPackageModal(false);
+      // Re-fetch fresh PostgreSQL state
+      setTimeout(() => {
+        loadDashboardData();
+      }, 500);
     } catch (err) {
       console.error('Failed to update package:', err);
-      alert('Error updating package in database.');
+      alert(`Could not save: ${err.message}`);
+      loadDashboardData(); // Revert back if DB call failed
     } finally {
       setSaveLoading(false);
     }
