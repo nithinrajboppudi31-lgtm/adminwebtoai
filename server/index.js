@@ -246,11 +246,11 @@ const handleDashboardData = async (req, res) => {
     }));
 
     return res.status(200).json({
-      // Values for App.jsx (/api/admin/overview)
+      // For App.jsx overview call
       totalUsers,
       totalProjects,
       totalRevenue: rawRevenue,
-      // Values for AdminDashboard.jsx (/api/admin/dashboard-data)
+      // Dashboard data metrics
       metrics: statsObj,
       stats: statsObj,
       users: formattedUsers,
@@ -363,7 +363,6 @@ app.get('/api/payments/packages', async (req, res) => {
       orderBy: { priceInInr: 'asc' },
     });
 
-    // Provide map format for App.jsx as well as array
     const packageMap = {
       starter: { name: 'Starter Plan', priceInInr: 99, credits: 100 },
       builder: { name: 'Builder Plan', priceInInr: 399, credits: 500 },
@@ -384,7 +383,7 @@ app.get('/api/payments/packages', async (req, res) => {
   }
 });
 
-// Handles BOTH single and multi package saves from App.jsx and AdminDashboard.jsx
+// Handles BOTH single and multi package saves
 const handlePackageSaveOrUpdate = async (req, res) => {
   try {
     const { 
@@ -405,7 +404,7 @@ const handlePackageSaveOrUpdate = async (req, res) => {
 
     const operations = [];
 
-    // Support payload schema from App.jsx
+    // Supports App.jsx payload
     if (starterPrice !== undefined || starterCredits !== undefined) {
       operations.push(
         prisma.creditPackage.upsert({
@@ -464,7 +463,7 @@ const handlePackageSaveOrUpdate = async (req, res) => {
       );
     }
 
-    // Support single item save schema
+    // Supports single package updates
     const targetId = String(id || packageId || '').toLowerCase().trim();
     if (targetId && operations.length === 0) {
       const finalCredits = Number(credits);
