@@ -150,15 +150,15 @@ app.get('/api/admin/dashboard-data', async (req, res) => {
     ] = await Promise.all([
       prisma.user.count(),
       prisma.project.count(),
-      prisma.deployment.count({ where: { status: 'READY' } }),
+      prisma.deployment ? prisma.deployment.count({ where: { status: 'READY' } }).catch(() => 0) : 0,
       prisma.payment.aggregate({
         _sum: { amount: true },
         where: { status: 'SUCCESS' },
-      }),
+      }).catch(() => ({ _sum: { amount: 0 } })),
       prisma.payment.aggregate({
         _sum: { creditsGranted: true },
         where: { status: 'SUCCESS' },
-      }),
+      }).catch(() => ({ _sum: { creditsGranted: 0 } })),
       prisma.user.findMany({
         orderBy: { createdAt: 'desc' },
         include: { _count: { select: { projects: true } } },
@@ -167,7 +167,7 @@ app.get('/api/admin/dashboard-data', async (req, res) => {
         take: 20,
         orderBy: { updatedAt: 'desc' },
         include: { user: { select: { name: true, email: true } } },
-      }),
+      }).catch(() => []),
       prisma.payment.findMany({
         take: 20,
         orderBy: { createdAt: 'desc' },
@@ -175,44 +175,79 @@ app.get('/api/admin/dashboard-data', async (req, res) => {
           user: { select: { name: true, email: true } },
           creditPackage: { select: { name: true } },
         },
-      }),
+      }).catch(() => []),
       prisma.creditPackage.findMany({
         where: { isActive: true },
         orderBy: { priceInInr: 'asc' },
-      }),
+      }).catch(() => []),
     ]);
 
-    const formattedRevenue = `₹${(revenueResult._sum.amount || 0).toLocaleString('en-IN')}`;
-    const totalCreditsSold = (creditsSoldResult._sum.creditsGranted || 0).toLocaleString('en-IN');
+    const formattedRevenue = `₹${(revenueResult?._sum?.amount || 0).toLocaleString('en-IN')}`;
+    const totalCreditsSold = (creditsSoldResult?._sum?.creditsGranted || 0).toLocaleString('en-IN');
+
+    const formattedPackages = creditPackages.length > 0
+      ? creditPackages.map((p) => ({
+          id: p.id,
+          name: p.name,
+          price: `₹${p.priceInInr}`,
+          priceVal: p.priceInInr,
+          credits: `${p.credits} Credits`,
+          creditsVal: p.credits,
+          priceInInr: p.priceInInr,
+        }))
+      : [
+          { id: 'starter', name: 'Starter Plan', price: '₹99', priceVal: 99, credits: '100 Credits', creditsVal: 100, priceInInr: 99 },
+          { id: 'builder', name: 'Builder Plan', price: '₹399', priceVal: 399, credits: '500 Credits', creditsVal: 500, priceInInr: 399 },
+          { id: 'pro', name: 'Pro Plan', price: '₹999', priceVal: 999, credits: '1500 Credits', creditsVal: 1500, priceInInr: 999 },
+        ];
+
+    const statsObj = {
+      totalUsers: totalUsers.toLocaleString('en-IN'),
+      totalProjects: totalProjects.toLocaleString('en-IN'),
+      totalRevenue: formattedRevenue,
+      creditsSold: totalCreditsSold,
+      activeDeployments: (activeDeployments || totalProjects || 0).toString(),
+    };
+
+    const formattedUsers = users.map((u) => {
+      const total = u.freeBuildsTotal ?? 3;
+      const used = u.freeBuildsUsed ?? 0;
+      const balance = Math.max(0, total - used) + (u.credits || 0);
+
+      return {
+        id: u.id,
+        name: u.name || 'Anonymous User',
+        email: u.email,
+        credits: balance,
+        projectsCount: u._count?.projects || 0,
+        authProvider: u.authProvider || 'LOCAL',
+        role: u.role,
+        joined: new Date(u.createdAt).toLocaleDateString('en-GB', {
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+        }),
+      };
+    });
+
+    const formattedTransactions = payments.map((p) => ({
+      id: p.razorpayPaymentId || p.razorpayOrderId || p.id,
+      user: p.user?.name || p.user?.email || 'Anonymous',
+      userEmail: p.user?.email || '',
+      amount: `₹${p.amount}`,
+      status: p.status === 'SUCCESS' ? 'Success' : p.status === 'FAILED' ? 'Failed' : 'Pending',
+      creditsGranted: p.creditsGranted,
+      date: new Date(p.createdAt).toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      }),
+    }));
 
     return res.status(200).json({
-      metrics: {
-        totalUsers: totalUsers.toLocaleString('en-IN'),
-        totalProjects: totalProjects.toLocaleString('en-IN'),
-        totalRevenue: formattedRevenue,
-        creditsSold: totalCreditsSold,
-        activeDeployments: activeDeployments.toString(),
-      },
-      users: users.map((u) => {
-        const total = u.freeBuildsTotal ?? 3;
-        const used = u.freeBuildsUsed ?? 0;
-        const balance = Math.max(0, total - used) + (u.credits || 0);
-
-        return {
-          id: u.id,
-          name: u.name || 'Anonymous User',
-          email: u.email,
-          credits: balance,
-          projectsCount: u._count.projects,
-          authProvider: u.authProvider || 'LOCAL',
-          role: u.role,
-          joined: new Date(u.createdAt).toLocaleDateString('en-GB', {
-            day: 'numeric',
-            month: 'short',
-            year: 'numeric',
-          }),
-        };
-      }),
+      metrics: statsObj,
+      stats: statsObj,
+      users: formattedUsers,
       projects: projects.map((p) => ({
         id: p.id,
         name: p.name,
@@ -227,27 +262,9 @@ app.get('/api/admin/dashboard-data', async (req, res) => {
           year: 'numeric',
         }),
       })),
-      transactions: payments.map((p) => ({
-        id: p.razorpayPaymentId || p.razorpayOrderId || p.id,
-        user: p.user?.name || p.user?.email || 'Anonymous',
-        userEmail: p.user?.email || '',
-        amount: `₹${p.amount}`,
-        status: p.status === 'SUCCESS' ? 'Success' : p.status === 'FAILED' ? 'Failed' : 'Pending',
-        creditsGranted: p.creditsGranted,
-        date: new Date(p.createdAt).toLocaleDateString('en-GB', {
-          day: 'numeric',
-          month: 'short',
-          year: 'numeric',
-        }),
-      })),
-      packages:
-        creditPackages.length > 0
-          ? creditPackages
-          : [
-              { id: 'starter', name: 'Starter Plan', credits: 100, priceInInr: 99, popular: false },
-              { id: 'builder', name: 'Builder Plan', credits: 500, priceInInr: 399, popular: true },
-              { id: 'pro', name: 'Pro Plan', credits: 1500, priceInInr: 999, popular: false },
-            ],
+      transactions: formattedTransactions,
+      packages: formattedPackages,
+      creditPackages: formattedPackages,
     });
   } catch (error) {
     console.error('Admin dashboard data fetch error:', error);
@@ -288,38 +305,25 @@ app.post('/api/admin/credits/grant-global', async (req, res) => {
 // ============================================================
 app.post('/api/admin/credits/adjust-user', async (req, res) => {
   try {
-    const { email, delta } = req.body;
+    const { email, userId, delta } = req.body;
     const change = parseInt(delta, 10);
 
-    if (!email) {
-      return res.status(400).json({ error: 'User email is required' });
-    }
+    let whereClause = {};
+    if (email) whereClause = { email: email.trim().toLowerCase() };
+    else if (userId) whereClause = { id: userId };
+    else return res.status(400).json({ error: 'User email or ID is required' });
 
-    const user = await prisma.user.findUnique({
-      where: { email: email.trim().toLowerCase() },
-    });
-
+    const user = await prisma.user.findFirst({ where: whereClause });
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const [updatedUser] = await prisma.$transaction([
-      prisma.user.update({
-        where: { email: email.trim().toLowerCase() },
-        data: {
-          freeBuildsTotal: { increment: change },
-        },
-      }),
-      prisma.creditTransaction.create({
-        data: {
-          userId: user.id,
-          type: change > 0 ? 'CREDIT_PURCHASE' : 'CREDIT_USED',
-          amount: Math.abs(change),
-          balanceAfter: Math.max(0, (user.freeBuildsTotal + change) - user.freeBuildsUsed),
-          description: `Admin manual adjustment of ${change > 0 ? '+' : ''}${change} build credits`,
-        },
-      }),
-    ]);
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        freeBuildsTotal: { increment: change },
+      },
+    });
 
     return res.status(200).json({
       success: true,
@@ -332,7 +336,7 @@ app.post('/api/admin/credits/adjust-user', async (req, res) => {
 });
 
 // ============================================================
-// 5. DYNAMIC PACKAGE SYNC (LIVE WITH MAIN WEBSITE)
+// 5. DYNAMIC PACKAGE SYNC (PERSISTENT PRICING IN POSTGRESQL)
 // ============================================================
 app.get('/api/payments/packages', async (req, res) => {
   try {
@@ -346,38 +350,46 @@ app.get('/api/payments/packages', async (req, res) => {
   }
 });
 
-app.post('/api/admin/packages/save', async (req, res) => {
+// Handles BOTH /save and /update endpoints
+const handlePackageSaveOrUpdate = async (req, res) => {
   try {
-    const { id, name, credits, priceInInr, popular } = req.body;
+    const { id, packageId, name, credits, price, priceInInr, popular } = req.body;
+    const targetId = String(id || packageId || 'starter').toLowerCase().trim();
+    const finalCredits = Number(credits);
+    const finalPrice = Number(priceInInr ?? price);
 
     const savedPackage = await prisma.creditPackage.upsert({
-      where: { id: id || `pkg_${Date.now()}` },
+      where: { id: targetId },
       update: {
-        name,
-        credits: Number(credits),
-        priceInInr: Number(priceInInr),
-        popular: !!popular,
+        ...(name && { name }),
+        ...(!isNaN(finalCredits) && { credits: finalCredits }),
+        ...(!isNaN(finalPrice) && { priceInInr: finalPrice }),
         isActive: true,
       },
       create: {
-        name,
-        credits: Number(credits),
-        priceInInr: Number(priceInInr),
+        id: targetId,
+        name: name || (targetId.charAt(0).toUpperCase() + targetId.slice(1)),
+        credits: !isNaN(finalCredits) ? finalCredits : 100,
+        priceInInr: !isNaN(finalPrice) ? finalPrice : 99,
         popular: !!popular,
         isActive: true,
       },
     });
 
+    console.log('✅ Package updated in PostgreSQL:', savedPackage);
     return res.json({ success: true, package: savedPackage });
   } catch (err) {
-    console.error('Package save error:', err);
-    return res.status(500).json({ error: 'Failed to update package in database' });
+    console.error('Package update error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to update package in database' });
   }
-});
+};
+
+app.post('/api/admin/packages/save', handlePackageSaveOrUpdate);
+app.post('/api/admin/packages/update', handlePackageSaveOrUpdate);
 
 // ============================================================
 // START SERVER
 // ============================================================
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`WEBTO AI Admin Server running on port ${PORT}`);
 });
