@@ -243,11 +243,6 @@ async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingC
   return cleanAndParseJSON(textOutput);
 }
 
-
-
-  
-
-
 async function generateChatReply(projectName, projectType, messages) {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey) throw new Error('GEMINI_API_KEY missing.');
@@ -268,7 +263,7 @@ INSTRUCTIONS:
 2. Always end with 3 suggestion chips strictly formatted as: [CHIPS: Option 1 | Option 2 | Option 3]
 `;
 
-          const endpoint = [
+  const endpoint = [
     'https:',
     '',
     'generativelanguage.googleapis.com',
@@ -402,16 +397,42 @@ app.post('/api/auth/oauth', async (req, res) => {
 
 app.post('/api/auth/google', async (req, res) => {
   try {
-    const { access_token } = req.body;
-    if (!access_token) return res.status(400).json({ error: 'Access token is required' });
+    const { access_token, credential, token: incomingToken } = req.body;
+    const tokenToUse = access_token || credential || incomingToken;
 
-    const googleRes = await fetch('[https://www.googleapis.com/oauth2/v3/userinfo](https://www.googleapis.com/oauth2/v3/userinfo)', {
-      headers: { Authorization: `Bearer ${access_token}` },
-    });
+    if (!tokenToUse) {
+      return res.status(400).json({ error: 'Google credential or access token is required' });
+    }
 
-    if (!googleRes.ok) return res.status(401).json({ error: 'Failed to verify Google account' });
+    let profile = null;
 
-    const profile = await googleRes.json();
+    // 1. Try resolving as access_token first
+    if (access_token) {
+      try {
+        const googleRes = await fetch('[https://www.googleapis.com/oauth2/v3/userinfo](https://www.googleapis.com/oauth2/v3/userinfo)', {
+          headers: { Authorization: `Bearer ${access_token}` },
+        });
+        if (googleRes.ok) {
+          profile = await googleRes.json();
+        }
+      } catch (_) {}
+    }
+
+    // 2. If access_token failed or frontend sent an ID token / credential
+    if (!profile) {
+      const tokenParam = credential || incomingToken || access_token;
+      try {
+        const verifyRes = await fetch(`[https://oauth2.googleapis.com/tokeninfo?id_token=$](https://oauth2.googleapis.com/tokeninfo?id_token=$){encodeURIComponent(tokenParam)}`);
+        if (verifyRes.ok) {
+          profile = await verifyRes.json();
+        }
+      } catch (_) {}
+    }
+
+    if (!profile || !profile.email) {
+      return res.status(401).json({ error: 'Failed to verify Google account token.' });
+    }
+
     const cleanEmail = profile.email.trim().toLowerCase();
 
     let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
@@ -426,6 +447,7 @@ app.post('/api/auth/google', async (req, res) => {
           freeBuildsTotal: 3,
           role: 'USER',
           authProvider: 'GOOGLE',
+          profileImage: profile.picture || null,
         },
       });
     }
@@ -433,6 +455,7 @@ app.post('/api/auth/google', async (req, res) => {
     const token = jwt.sign({ userId: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
     return res.status(200).json({ success: true, token, user: formatSafeUser(user) });
   } catch (error) {
+    console.error('Google authentication error:', error);
     return res.status(500).json({ error: 'Google authentication failed' });
   }
 });
