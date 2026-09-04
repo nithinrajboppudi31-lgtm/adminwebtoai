@@ -1,4 +1,3 @@
-import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import express from 'express';
 import cors from 'cors';
@@ -124,7 +123,6 @@ app.post('/api/auth/login', async (req, res) => {
     let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
 
     if (!user) {
-      // Auto-provision user if they signed up previously or are using passwordless login
       const defaultPass = await bcrypt.hash(password || 'webtoai_default', 10);
       user = await prisma.user.create({
         data: {
@@ -185,7 +183,7 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// POST /api/auth/oauth (Prompt fallback flow)
+// POST /api/auth/oauth
 app.post('/api/auth/oauth', async (req, res) => {
   try {
     const { email, name, provider } = req.body;
@@ -445,6 +443,31 @@ const handleDashboardData = async (req, res) => {
 
 app.get('/api/admin/overview', handleDashboardData);
 app.get('/api/admin/dashboard-data', handleDashboardData);
+
+// Credit adjustments
+app.post('/api/admin/credits/global', async (req, res) => {
+  try {
+    const amount = parseInt(req.body.amount, 10) || 5;
+    await prisma.user.updateMany({ data: { freeBuildsTotal: { increment: amount } } });
+    return res.json({ success: true, message: `Granted ${amount} credits globally!` });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to grant credits' });
+  }
+});
+
+app.post('/api/admin/credits/user', async (req, res) => {
+  try {
+    const { email, amount } = req.body;
+    const change = parseInt(amount, 10) || 0;
+    const updated = await prisma.user.update({
+      where: { email: email.trim().toLowerCase() },
+      data: { freeBuildsTotal: { increment: change } },
+    });
+    return res.json({ success: true, user: formatSafeUser(updated) });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to adjust credits' });
+  }
+});
 
 // Packages
 app.get('/api/payments/packages', async (req, res) => {
