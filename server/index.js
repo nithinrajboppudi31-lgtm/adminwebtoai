@@ -14,7 +14,7 @@ const prisma = new PrismaClient();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'webto_ai_super_secure_jwt_secret_key_2026';
 
-// Native password hashing
+// Password hashing helper using Node's native crypto module
 const hashPassword = (pw) => crypto.createHash('sha256').update(pw).digest('hex');
 
 const allowedOrigins = [
@@ -89,8 +89,12 @@ const authenticate = async (req, res, next) => {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET);
 
-    if (decoded.role === 'ADMIN') {
-      req.user = { id: 'admin', email: decoded.email, role: 'ADMIN' };
+    if (decoded.role === 'ADMIN' && decoded.userId === 'admin') {
+      let adminRecord = await prisma.user.findFirst({ where: { role: 'ADMIN' } });
+      if (!adminRecord) {
+        adminRecord = await prisma.user.findFirst();
+      }
+      req.user = adminRecord || { id: decoded.userId, email: decoded.email, role: 'ADMIN' };
       return next();
     }
 
@@ -110,7 +114,7 @@ const authenticate = async (req, res, next) => {
 };
 
 // ============================================================
-// AI SYNTHESIS VIA NATIVE FETCH (Zero external SDK required)
+// AI SYNTHESIS VIA NATIVE FETCH
 // ============================================================
 function cleanAndParseJSON(rawText) {
   let cleaned = (rawText || '').trim();
@@ -135,8 +139,8 @@ Generate a complete, single-page full-stack web application based on the user's 
 
 CRITICAL RULES:
 1. "entryHtml": MUST be a 100% complete, working HTML5 file with Tailwind CSS (<script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>) and FontAwesome 6 (<link rel="stylesheet" href="[https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css](https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css)" />).
-2. Implement full interactive state in JavaScript (e.g. window.state, dynamic filters, responsive cart/actions, modal popups).
-3. "files": Provide an array of files ({ name, path, content }).
+2. Implement full interactive state in JavaScript (window.state, search filters, interactive cart/counter actions, modal popups).
+3. "files": Provide an array of modular files ({ name, path, content }).
 4. Return ONLY a valid JSON object with keys "entryHtml" and "files". No markdown backticks.
 `;
 
@@ -428,7 +432,7 @@ app.get('/api/auth/me', authenticate, (req, res) => {
 });
 
 // ============================================================
-// 2. PROJECT CREATION & WORKSPACE ROUTES
+// 2. PROJECT CREATION & WORKSPACE ROUTES (Schema-matched)
 // ============================================================
 
 // POST /api/projects
@@ -437,21 +441,32 @@ app.post('/api/projects', authenticate, async (req, res) => {
     const { name, description, type } = req.body;
     const userId = req.user.id;
 
+    // Generate unique slug
+    const baseSlug = (name || 'project')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '-')
+      .replace(/-+/g, '-')
+      .slice(0, 30);
+    const uniqueSlug = `${baseSlug}-${Date.now().toString().slice(-5)}`;
+
     const project = await prisma.project.create({
       data: {
         name: name || 'New Application',
         description: description || '',
         type: type || 'FULL_STACK',
-        userId: userId === 'admin' ? undefined : userId,
+        userId: userId,
+        slug: uniqueSlug,
         entryHtml: '',
-        files: [],
+      },
+      include: {
+        files: true,
       },
     });
 
     return res.status(201).json({ success: true, project });
   } catch (error) {
     console.error('Create project error:', error);
-    return res.status(500).json({ error: 'Failed to create project in database.' });
+    return res.status(500).json({ error: error.message || 'Failed to create project in database.' });
   }
 });
 
@@ -461,7 +476,10 @@ app.get('/api/projects/:id', authenticate, async (req, res) => {
     const { id } = req.params;
     const project = await prisma.project.findUnique({
       where: { id },
-      include: { user: true },
+      include: {
+        files: true,
+        user: true,
+      },
     });
 
     if (!project) {
@@ -487,20 +505,37 @@ app.post('/api/generate/:id', authenticate, async (req, res) => {
       }
     }
 
-    const project = await prisma.project.findUnique({ where: { id } });
+    const project = await prisma.project.findUnique({
+      where: { id },
+      include: { files: true },
+    });
     if (!project) return res.status(404).json({ error: 'Project not found.' });
 
     const aiResult = await generateProjectCode(prompt, project.type, project.entryHtml, image);
+
+    // Save project files to ProjectFile table
+    if (aiResult.files && Array.isArray(aiResult.files)) {
+      await prisma.projectFile.deleteMany({ where: { projectId: id } });
+      await prisma.projectFile.createMany({
+        data: aiResult.files.map((f) => ({
+          projectId: id,
+          name: f.name || 'file.txt',
+          path: f.path || f.name || 'file.txt',
+          content: f.content || '',
+        })),
+      });
+    }
 
     const updatedProject = await prisma.project.update({
       where: { id },
       data: {
         entryHtml: aiResult.entryHtml,
-        files: aiResult.files,
         updatedAt: new Date(),
       },
+      include: { files: true },
     });
 
+    // Deduct user build credit
     let updatedUser = req.user;
     if (req.user.role !== 'ADMIN') {
       updatedUser = await prisma.user.update({
@@ -583,6 +618,11 @@ app.post('/api/deploy/:id', authenticate, async (req, res) => {
     if (!project) return res.status(404).json({ error: 'Project not found.' });
 
     const deployedUrl = `[https://webtoai.vercel.app/preview/$](https://webtoai.vercel.app/preview/$){project.slug || project.id}`;
+    await prisma.project.update({
+      where: { id },
+      data: { isDeployed: true, deployedUrl },
+    });
+
     return res.json({ success: true, project, deployedUrl });
   } catch (err) {
     return res.status(500).json({ error: 'Deployment failed.' });
@@ -590,7 +630,7 @@ app.post('/api/deploy/:id', authenticate, async (req, res) => {
 });
 
 // ============================================================
-// 3. ADMIN PANEL & MANAGEMENT
+// 3. ADMIN PANEL & DASHBOARD
 // ============================================================
 app.post('/api/admin/request-otp', async (req, res) => {
   try {
@@ -631,7 +671,14 @@ app.post('/api/admin/verify-otp', async (req, res) => {
     }
 
     delete adminOtpStore[cleanEmail];
-    const token = jwt.sign({ role: 'ADMIN', email: cleanEmail }, JWT_SECRET, { expiresIn: '30d' });
+    let adminUser = await prisma.user.findUnique({ where: { email: cleanEmail } });
+    if (!adminUser) {
+      adminUser = await prisma.user.create({
+        data: { email: cleanEmail, name: 'Admin', role: 'ADMIN', freeBuildsTotal: 99999 },
+      });
+    }
+
+    const token = jwt.sign({ userId: adminUser.id, role: 'ADMIN', email: cleanEmail }, JWT_SECRET, { expiresIn: '30d' });
     return res.json({ success: true, token });
   } catch (err) {
     return res.status(500).json({ error: 'Verification failed.' });
@@ -649,7 +696,7 @@ const handleDashboardData = async (req, res) => {
 
     const successfulPayments = payments.filter((p) => p.status === 'SUCCESS');
     const totalRevenue = successfulPayments.reduce((acc, curr) => acc + (curr.amount || 0), 0);
-    const creditsSold = successfulPayments.reduce((acc, curr) => acc + (curr.creditsGranted || curr.credits || 0), 0);
+    const creditsSold = successfulPayments.reduce((acc, curr) => acc + (curr.creditsGranted || 0), 0);
 
     const safeUsers = users.map((u) => {
       const total = u.freeBuildsTotal ?? 3;
