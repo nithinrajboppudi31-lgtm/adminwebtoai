@@ -133,9 +133,9 @@ app.post('/api/admin/verify-otp', async (req, res) => {
 });
 
 // ============================================================
-// 2. LIVE DASHBOARD DATA (FROM POSTGRESQL PRISMA)
+// 2. LIVE DASHBOARD DATA & OVERVIEW (FROM POSTGRESQL PRISMA)
 // ============================================================
-app.get('/api/admin/dashboard-data', async (req, res) => {
+const handleDashboardData = async (req, res) => {
   try {
     const [
       totalUsers,
@@ -182,7 +182,8 @@ app.get('/api/admin/dashboard-data', async (req, res) => {
       }).catch(() => []),
     ]);
 
-    const formattedRevenue = `₹${(revenueResult?._sum?.amount || 0).toLocaleString('en-IN')}`;
+    const rawRevenue = revenueResult?._sum?.amount || 0;
+    const formattedRevenue = `₹${rawRevenue.toLocaleString('en-IN')}`;
     const totalCreditsSold = (creditsSoldResult?._sum?.creditsGranted || 0).toLocaleString('en-IN');
 
     const formattedPackages = creditPackages.length > 0
@@ -245,6 +246,11 @@ app.get('/api/admin/dashboard-data', async (req, res) => {
     }));
 
     return res.status(200).json({
+      // Values for App.jsx (/api/admin/overview)
+      totalUsers,
+      totalProjects,
+      totalRevenue: rawRevenue,
+      // Values for AdminDashboard.jsx (/api/admin/dashboard-data)
       metrics: statsObj,
       stats: statsObj,
       users: formattedUsers,
@@ -263,6 +269,7 @@ app.get('/api/admin/dashboard-data', async (req, res) => {
         }),
       })),
       transactions: formattedTransactions,
+      payments: formattedTransactions,
       packages: formattedPackages,
       creditPackages: formattedPackages,
     });
@@ -270,12 +277,16 @@ app.get('/api/admin/dashboard-data', async (req, res) => {
     console.error('Admin dashboard data fetch error:', error);
     res.status(500).json({ error: 'Failed to retrieve admin dashboard records' });
   }
-});
+};
+
+app.get('/api/admin/dashboard-data', handleDashboardData);
+app.get('/api/admin/overview', handleDashboardData);
+app.get('/api/admin/payments', handleDashboardData);
 
 // ============================================================
 // 3. GRANT FREE CREDITS GLOBALLY (ALL USERS)
 // ============================================================
-app.post('/api/admin/credits/grant-global', async (req, res) => {
+const handleGrantGlobalCredits = async (req, res) => {
   try {
     const { amount } = req.body;
     const addAmount = parseInt(amount, 10);
@@ -298,15 +309,18 @@ app.post('/api/admin/credits/grant-global', async (req, res) => {
     console.error('Global credit error:', error);
     res.status(500).json({ error: 'Failed to distribute credits globally' });
   }
-});
+};
+
+app.post('/api/admin/credits/grant-global', handleGrantGlobalCredits);
+app.post('/api/admin/credits/global', handleGrantGlobalCredits);
 
 // ============================================================
 // 4. ADJUST CREDITS FOR A SPECIFIC USER
 // ============================================================
-app.post('/api/admin/credits/adjust-user', async (req, res) => {
+const handleAdjustUserCredits = async (req, res) => {
   try {
-    const { email, userId, delta } = req.body;
-    const change = parseInt(delta, 10);
+    const { email, userId, delta, amount } = req.body;
+    const change = parseInt(delta ?? amount, 10);
 
     let whereClause = {};
     if (email) whereClause = { email: email.trim().toLowerCase() };
@@ -327,13 +341,17 @@ app.post('/api/admin/credits/adjust-user', async (req, res) => {
 
     return res.status(200).json({
       success: true,
+      message: `Adjusted credits for ${user.name || user.email}`,
       user: updatedUser,
     });
   } catch (error) {
     console.error('User credit adjustment error:', error);
     res.status(500).json({ error: 'Failed to update user credits' });
   }
-});
+};
+
+app.post('/api/admin/credits/adjust-user', handleAdjustUserCredits);
+app.post('/api/admin/credits/user', handleAdjustUserCredits);
 
 // ============================================================
 // 5. DYNAMIC PACKAGE SYNC (PERSISTENT PRICING IN POSTGRESQL)
@@ -344,40 +362,138 @@ app.get('/api/payments/packages', async (req, res) => {
       where: { isActive: true },
       orderBy: { priceInInr: 'asc' },
     });
-    return res.json({ packages });
+
+    // Provide map format for App.jsx as well as array
+    const packageMap = {
+      starter: { name: 'Starter Plan', priceInInr: 99, credits: 100 },
+      builder: { name: 'Builder Plan', priceInInr: 399, credits: 500 },
+      pro: { name: 'Pro Plan', priceInInr: 999, credits: 1500 },
+    };
+
+    packages.forEach((pkg) => {
+      packageMap[pkg.id] = {
+        name: pkg.name,
+        priceInInr: pkg.priceInInr,
+        credits: pkg.credits,
+      };
+    });
+
+    return res.json({ packages: packageMap, list: packages });
   } catch (err) {
     return res.status(500).json({ error: 'Failed to load packages' });
   }
 });
 
-// Handles BOTH /save and /update endpoints
+// Handles BOTH single and multi package saves from App.jsx and AdminDashboard.jsx
 const handlePackageSaveOrUpdate = async (req, res) => {
   try {
-    const { id, packageId, name, credits, price, priceInInr, popular } = req.body;
-    const targetId = String(id || packageId || 'starter').toLowerCase().trim();
-    const finalCredits = Number(credits);
-    const finalPrice = Number(priceInInr ?? price);
+    const { 
+      id, 
+      packageId, 
+      name, 
+      credits, 
+      price, 
+      priceInInr, 
+      popular,
+      starterPrice,
+      starterCredits,
+      builderPrice,
+      builderCredits,
+      proPrice,
+      proCredits
+    } = req.body;
 
-    const savedPackage = await prisma.creditPackage.upsert({
-      where: { id: targetId },
-      update: {
-        ...(name && { name }),
-        ...(!isNaN(finalCredits) && { credits: finalCredits }),
-        ...(!isNaN(finalPrice) && { priceInInr: finalPrice }),
-        isActive: true,
-      },
-      create: {
-        id: targetId,
-        name: name || (targetId.charAt(0).toUpperCase() + targetId.slice(1)),
-        credits: !isNaN(finalCredits) ? finalCredits : 100,
-        priceInInr: !isNaN(finalPrice) ? finalPrice : 99,
-        popular: !!popular,
-        isActive: true,
-      },
-    });
+    const operations = [];
 
-    console.log('✅ Package updated in PostgreSQL:', savedPackage);
-    return res.json({ success: true, package: savedPackage });
+    // Support payload schema from App.jsx
+    if (starterPrice !== undefined || starterCredits !== undefined) {
+      operations.push(
+        prisma.creditPackage.upsert({
+          where: { id: 'starter' },
+          update: {
+            ...(starterPrice !== undefined && { priceInInr: Number(starterPrice) }),
+            ...(starterCredits !== undefined && { credits: Number(starterCredits) }),
+            isActive: true,
+          },
+          create: {
+            id: 'starter',
+            name: 'Starter Plan',
+            priceInInr: Number(starterPrice) || 99,
+            credits: Number(starterCredits) || 100,
+            isActive: true,
+          },
+        })
+      );
+    }
+    if (builderPrice !== undefined || builderCredits !== undefined) {
+      operations.push(
+        prisma.creditPackage.upsert({
+          where: { id: 'builder' },
+          update: {
+            ...(builderPrice !== undefined && { priceInInr: Number(builderPrice) }),
+            ...(builderCredits !== undefined && { credits: Number(builderCredits) }),
+            isActive: true,
+          },
+          create: {
+            id: 'builder',
+            name: 'Builder Plan',
+            priceInInr: Number(builderPrice) || 399,
+            credits: Number(builderCredits) || 500,
+            isActive: true,
+          },
+        })
+      );
+    }
+    if (proPrice !== undefined || proCredits !== undefined) {
+      operations.push(
+        prisma.creditPackage.upsert({
+          where: { id: 'pro' },
+          update: {
+            ...(proPrice !== undefined && { priceInInr: Number(proPrice) }),
+            ...(proCredits !== undefined && { credits: Number(proCredits) }),
+            isActive: true,
+          },
+          create: {
+            id: 'pro',
+            name: 'Pro Plan',
+            priceInInr: Number(proPrice) || 999,
+            credits: Number(proCredits) || 1500,
+            isActive: true,
+          },
+        })
+      );
+    }
+
+    // Support single item save schema
+    const targetId = String(id || packageId || '').toLowerCase().trim();
+    if (targetId && operations.length === 0) {
+      const finalCredits = Number(credits);
+      const finalPrice = Number(priceInInr ?? price);
+
+      operations.push(
+        prisma.creditPackage.upsert({
+          where: { id: targetId },
+          update: {
+            ...(name && { name }),
+            ...(!isNaN(finalCredits) && { credits: finalCredits }),
+            ...(!isNaN(finalPrice) && { priceInInr: finalPrice }),
+            isActive: true,
+          },
+          create: {
+            id: targetId,
+            name: name || (targetId.charAt(0).toUpperCase() + targetId.slice(1)),
+            credits: !isNaN(finalCredits) ? finalCredits : 100,
+            priceInInr: !isNaN(finalPrice) ? finalPrice : 99,
+            popular: !!popular,
+            isActive: true,
+          },
+        })
+      );
+    }
+
+    await Promise.all(operations);
+    console.log('✅ Package updated in PostgreSQL successfully');
+    return res.json({ success: true, message: 'Packages saved successfully' });
   } catch (err) {
     console.error('Package update error:', err);
     return res.status(500).json({ error: err.message || 'Failed to update package in database' });
