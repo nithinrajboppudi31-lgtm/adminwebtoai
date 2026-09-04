@@ -5,7 +5,6 @@ import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import { Resend } from 'resend';
 import { PrismaClient } from '@prisma/client';
-import { GoogleGenAI, Type } from '@google/genai';
 
 dotenv.config();
 
@@ -14,9 +13,6 @@ const prisma = new PrismaClient();
 
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'webto_ai_super_secure_jwt_secret_key_2026';
-
-// Gemini AI Client
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // Native password hashing
 const hashPassword = (pw) => crypto.createHash('sha256').update(pw).digest('hex');
@@ -114,7 +110,7 @@ const authenticate = async (req, res, next) => {
 };
 
 // ============================================================
-// AI SYNTHESIS HELPERS
+// AI SYNTHESIS VIA NATIVE FETCH (Zero external SDK required)
 // ============================================================
 function cleanAndParseJSON(rawText) {
   let cleaned = (rawText || '').trim();
@@ -135,25 +131,22 @@ function cleanAndParseJSON(rawText) {
 
 const SYSTEM_PROMPT = `
 You are the Lead Full-Stack Software Architect and UI/UX Designer for WEBTO AI.
-You generate fully-formed, production-grade, highly interactive single-page full-stack web applications, marketplaces, platforms, and dashboards.
+Generate a complete, single-page full-stack web application based on the user's prompt.
 
-CRITICAL ARCHITECTURE RULES:
-1. "entryHtml": MUST be a 100% complete, standalone HTML5 document that runs seamlessly out of the box in an iframe sandbox without external build tools.
-   - Include Tailwind CSS CDN: <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
-   - Include FontAwesome 6 CDN: <link rel="stylesheet" href="[https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css](https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css)" />
-   - Use Google Fonts (Inter or Plus Jakarta Sans).
-   - Use high-resolution Unsplash image URLs.
-2. FULL-STACK APPLICATION LOGIC & REAL-TIME STATE:
-   - Full in-memory interactive JavaScript state (window.state = { cart: [], items: [], filter: 'all' }) with live DOM updating.
-   - Working drawers, checkout simulations, quantity incrementers, dynamic tabs, and modals.
-3. "files": Provide modular files (index.html, app.js, styles.css) for display in the code viewer.
-4. Return strict JSON matching the schema.
+CRITICAL RULES:
+1. "entryHtml": MUST be a 100% complete, working HTML5 file with Tailwind CSS (<script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>) and FontAwesome 6 (<link rel="stylesheet" href="[https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css](https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css)" />).
+2. Implement full interactive state in JavaScript (e.g. window.state, dynamic filters, responsive cart/actions, modal popups).
+3. "files": Provide an array of files ({ name, path, content }).
+4. Return ONLY a valid JSON object with keys "entryHtml" and "files". No markdown backticks.
 `;
 
 async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingCode = '', image = null) {
-  let fullPrompt = `${SYSTEM_PROMPT}\n\nProject Architecture Type: ${projectType}\nUser Requirements / App Features:\n${prompt}`;
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GEMINI_API_KEY is not configured on Render.');
+
+  let fullPrompt = `${SYSTEM_PROMPT}\n\nProject Architecture Type: ${projectType}\nUser Requirements:\n${prompt}`;
   if (existingCode) {
-    fullPrompt += `\n\nExisting Application Code to update/enhance:\n${existingCode.slice(0, 15000)}`;
+    fullPrompt += `\n\nExisting Application Code:\n${existingCode.slice(0, 15000)}`;
   }
 
   const parts = [{ text: fullPrompt }];
@@ -173,70 +166,69 @@ async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingC
     }
 
     parts.unshift({
-      inlineData: {
-        mimeType: mimeType,
+      inline_data: {
+        mime_type: mimeType,
         data: base64Data,
       },
     });
   }
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: [{ role: 'user', parts }],
-    config: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          entryHtml: {
-            type: Type.STRING,
-            description: 'Complete standalone HTML file with Tailwind CSS CDN and functional JS state.',
-          },
-          files: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                name: { type: Type.STRING },
-                path: { type: Type.STRING },
-                content: { type: Type.STRING },
-              },
-              required: ['name', 'path', 'content'],
-            },
-          },
-        },
-        required: ['entryHtml', 'files'],
+  const url = `[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$){apiKey}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts }],
+      generationConfig: {
+        responseMimeType: 'application/json',
       },
-    },
+    }),
   });
 
-  return cleanAndParseJSON(response.text);
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Gemini API error (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json();
+  const textOutput = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  return cleanAndParseJSON(textOutput);
 }
 
 async function generateChatReply(projectName, projectType, messages) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GEMINI_API_KEY missing.');
+
   const formattedHistory = messages
     .map((m) => `${m.role === 'user' ? 'User' : 'Lead Architect'}: ${m.content}`)
     .join('\n');
 
   const prompt = `
-You are the Lead Architect for WEBTO AI. Interview the user to plan and design the best web application.
+You are the Lead Architect for WEBTO AI. Interview the user to plan the app.
 Project: "${projectName || 'Web App'}" (${projectType || 'FULL_STACK'})
 
-Conversation history:
+History:
 ${formattedHistory}
 
 INSTRUCTIONS:
-1. Ask 1-2 focused questions about key pages, specific features, or styling.
-2. Keep responses concise (under 3 sentences).
-3. Always include 3 suggestion chips at the end formatted strictly as: [CHIPS: Option 1 | Option 2 | Option 3]
+1. Ask 1-2 focused questions about key features or styles (under 3 sentences).
+2. Always end with 3 suggestion chips strictly formatted as: [CHIPS: Option 1 | Option 2 | Option 3]
 `;
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash',
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+  const url = `[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$){apiKey}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    }),
   });
 
-  const replyText = response.text || '';
+  const data = await response.json();
+  const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
   let chips = [];
   const chipMatch = replyText.match(/\[CHIPS:\s*(.*?)\]/i);
   if (chipMatch) {
@@ -439,7 +431,7 @@ app.get('/api/auth/me', authenticate, (req, res) => {
 // 2. PROJECT CREATION & WORKSPACE ROUTES
 // ============================================================
 
-// POST /api/projects (Triggers when clicking "Start Building")
+// POST /api/projects
 app.post('/api/projects', authenticate, async (req, res) => {
   try {
     const { name, description, type } = req.body;
@@ -463,7 +455,7 @@ app.post('/api/projects', authenticate, async (req, res) => {
   }
 });
 
-// GET /api/projects/:id (Loads project into Workspace)
+// GET /api/projects/:id
 app.get('/api/projects/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
@@ -482,13 +474,12 @@ app.get('/api/projects/:id', authenticate, async (req, res) => {
   }
 });
 
-// POST /api/generate/:id (Runs Gemini synthesis and updates project)
+// POST /api/generate/:id
 app.post('/api/generate/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const { prompt, image } = req.body;
 
-    // Check Credits
     if (req.user.role !== 'ADMIN') {
       const remaining = Math.max(0, (req.user.freeBuildsTotal ?? 3) - (req.user.freeBuildsUsed ?? 0)) + (req.user.credits || 0);
       if (remaining <= 0) {
@@ -510,7 +501,6 @@ app.post('/api/generate/:id', authenticate, async (req, res) => {
       },
     });
 
-    // Deduct user build credit
     let updatedUser = req.user;
     if (req.user.role !== 'ADMIN') {
       updatedUser = await prisma.user.update({
@@ -533,7 +523,7 @@ app.post('/api/generate/:id', authenticate, async (req, res) => {
   }
 });
 
-// POST /api/chat/:id (Architect Chat helper)
+// POST /api/chat/:id
 app.post('/api/chat/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
