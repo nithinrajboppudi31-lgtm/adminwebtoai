@@ -1,99 +1,381 @@
+import Razorpay from 'razorpay';
+import crypto from 'crypto';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { PrismaClient } from '@prisma/client';
 import { Resend } from 'resend';
-import nodemailer from 'nodemailer';
+import { PrismaClient } from '@prisma/client';
 
 dotenv.config();
 
-const prisma = new PrismaClient();
 const app = express();
+const prisma = new PrismaClient();
 
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'webto_ai_super_secure_jwt_secret_key_2026';
 
-app.use(cors());
-app.use(express.json());
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:5000',
+  process.env.CLIENT_URL,
+].filter(Boolean);
 
-// ============================================================
-// EMAIL DISPATCHER (Resend primary, Nodemailer fallback)
-// ============================================================
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (
+        origin.endsWith('.vercel.app') ||
+        allowedOrigins.includes(origin) ||
+        origin.startsWith('http://localhost:')
+      ) {
+        return callback(null, true);
+      }
+      return callback(null, true);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
+
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ limit: '25mb', extended: true }));
+
+// Health Check
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', uptime: process.uptime() });
+});
+
+app.get('/', (req, res) => {
+  res.send('WEBTO AI Backend & Admin Server running!');
+});
+
+// Resend Email Service
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
-
-const transporter = process.env.ADMIN_EMAIL_SENDER && process.env.ADMIN_EMAIL_PASS
-  ? nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.ADMIN_EMAIL_SENDER,
-        pass: process.env.ADMIN_EMAIL_PASS,
-      },
-    })
-  : null;
-
-// In-memory OTP storage for admin logins
 const adminOtpStore = {};
 
+const formatSafeUser = (user) => {
+  const {
+    password: _,
+    resetPasswordToken: __,
+    resetPasswordExpires: ___,
+    ...rest
+  } = user;
+
+  const total = rest.freeBuildsTotal ?? 3;
+  const used = rest.freeBuildsUsed ?? 0;
+
+  return {
+    ...rest,
+    credits: Math.max(0, total - used) + (rest.credits || 0),
+  };
+};
+
 // ============================================================
-// 1. ADMIN AUTHENTICATION (EMAIL OTP ONLY)
+// AUTHENTICATION MIDDLEWARE
+// ============================================================
+const authenticate = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authorization token required.' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    if (decoded.role === 'ADMIN') {
+      req.user = { id: 'admin', email: decoded.email, role: 'ADMIN' };
+      return next();
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+    });
+
+    if (!user) {
+      return res.status(401).json({ error: 'User not found.' });
+    }
+
+    req.user = user;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: 'Invalid or expired token.' });
+  }
+};
+
+// ============================================================
+// 1. MAIN APP USER AUTHENTICATION (Login, Register, OAuth)
+// ============================================================
+
+// POST /api/auth/login
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email address is required.' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
+
+    if (!user) {
+      // Auto-provision user if they signed up previously or are using passwordless login
+      const defaultPass = await bcrypt.hash(password || 'webtoai_default', 10);
+      user = await prisma.user.create({
+        data: {
+          email: cleanEmail,
+          password: defaultPass,
+          name: cleanEmail.split('@')[0],
+          freeBuildsUsed: 0,
+          freeBuildsTotal: 3,
+          role: 'USER',
+        },
+      });
+    } else if (password && user.password) {
+      const match = await bcrypt.compare(password, user.password).catch(() => false);
+      if (!match && user.password !== password) {
+        return res.status(401).json({ error: 'Invalid password. Please check your credentials.' });
+      }
+    }
+
+    const token = jwt.sign({ userId: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+    return res.status(200).json({ success: true, token, user: formatSafeUser(user) });
+  } catch (err) {
+    console.error('Login error:', err);
+    return res.status(500).json({ error: 'Login failed. Please try again.' });
+  }
+});
+
+// POST /api/auth/register
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, name, password, authProvider } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required.' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
+
+    if (!user) {
+      const hashedPassword = await bcrypt.hash(password || crypto.randomBytes(16).toString('hex'), 10);
+      user = await prisma.user.create({
+        data: {
+          email: cleanEmail,
+          name: name || cleanEmail.split('@')[0],
+          password: hashedPassword,
+          freeBuildsUsed: 0,
+          freeBuildsTotal: 3,
+          role: 'USER',
+          ...(authProvider ? { authProvider } : {}),
+        },
+      });
+    }
+
+    const token = jwt.sign({ userId: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+    return res.status(200).json({ success: true, token, user: formatSafeUser(user) });
+  } catch (err) {
+    console.error('Register error:', err);
+    return res.status(500).json({ error: 'Registration failed.' });
+  }
+});
+
+// POST /api/auth/oauth (Prompt fallback flow)
+app.post('/api/auth/oauth', async (req, res) => {
+  try {
+    const { email, name, provider } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required.' });
+
+    const cleanEmail = email.trim().toLowerCase();
+    let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
+
+    if (!user) {
+      const dummyPass = await bcrypt.hash(crypto.randomBytes(16).toString('hex'), 10);
+      user = await prisma.user.create({
+        data: {
+          email: cleanEmail,
+          name: name || cleanEmail.split('@')[0],
+          password: dummyPass,
+          freeBuildsUsed: 0,
+          freeBuildsTotal: 3,
+          role: 'USER',
+          ...(provider ? { authProvider: provider } : {}),
+        },
+      });
+    }
+
+    const token = jwt.sign({ userId: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+    return res.status(200).json({ success: true, token, user: formatSafeUser(user) });
+  } catch (error) {
+    console.error('OAuth fallback error:', error);
+    return res.status(500).json({ error: 'OAuth authentication failed.' });
+  }
+});
+
+// POST /api/auth/google
+app.post('/api/auth/google', async (req, res) => {
+  try {
+    const { access_token } = req.body;
+    if (!access_token) return res.status(400).json({ error: 'Access token is required' });
+
+    const googleRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${access_token}` },
+    });
+
+    if (!googleRes.ok) return res.status(401).json({ error: 'Failed to verify Google account' });
+
+    const profile = await googleRes.json();
+    const cleanEmail = profile.email.trim().toLowerCase();
+
+    let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
+
+    if (!user) {
+      const dummyPass = await bcrypt.hash(crypto.randomBytes(16).toString('hex'), 10);
+      user = await prisma.user.create({
+        data: {
+          email: cleanEmail,
+          name: profile.name || cleanEmail.split('@')[0],
+          password: dummyPass,
+          freeBuildsUsed: 0,
+          freeBuildsTotal: 3,
+          role: 'USER',
+          authProvider: 'GOOGLE',
+        },
+      });
+    }
+
+    const token = jwt.sign({ userId: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+    return res.status(200).json({ success: true, token, user: formatSafeUser(user) });
+  } catch (error) {
+    console.error('Google auth error:', error);
+    return res.status(500).json({ error: 'Google authentication failed' });
+  }
+});
+
+// POST /api/auth/github
+app.post('/api/auth/github', async (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ error: 'Authorization code is required' });
+
+    const clientId = process.env.GITHUB_CLIENT_ID;
+    const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      return res.status(500).json({ error: 'GitHub OAuth credentials not configured on backend.' });
+    }
+
+    const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'User-Agent': 'WEBTOAI-App',
+      },
+      body: JSON.stringify({
+        client_id: clientId.trim(),
+        client_secret: clientSecret.trim(),
+        code: code.trim(),
+      }),
+    });
+
+    const tokenData = await tokenRes.json();
+    if (tokenData.error || !tokenData.access_token) {
+      return res.status(401).json({ error: tokenData.error_description || 'Failed to exchange GitHub authorization code.' });
+    }
+
+    const userRes = await fetch('https://api.github.com/user', {
+      headers: {
+        Authorization: `Bearer ${tokenData.access_token}`,
+        'User-Agent': 'WEBTOAI-App',
+      },
+    });
+
+    const ghUser = await userRes.json();
+    let email = ghUser.email;
+
+    if (!email) {
+      const emailRes = await fetch('https://api.github.com/user/emails', {
+        headers: {
+          Authorization: `Bearer ${tokenData.access_token}`,
+          'User-Agent': 'WEBTOAI-App',
+        },
+      });
+      const emails = await emailRes.json();
+      if (Array.isArray(emails)) {
+        const primary = emails.find((e) => e.primary && e.verified);
+        email = primary ? primary.email : emails[0]?.email;
+      }
+    }
+
+    if (!email) {
+      email = `${ghUser.login}@users.noreply.github.com`;
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
+
+    if (!user) {
+      const dummyPass = await bcrypt.hash(crypto.randomBytes(16).toString('hex'), 10);
+      user = await prisma.user.create({
+        data: {
+          email: cleanEmail,
+          name: ghUser.name || ghUser.login || 'GitHub User',
+          password: dummyPass,
+          freeBuildsUsed: 0,
+          freeBuildsTotal: 3,
+          role: 'USER',
+          authProvider: 'GITHUB',
+        },
+      });
+    }
+
+    const token = jwt.sign({ userId: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+    return res.status(200).json({ success: true, token, user: formatSafeUser(user) });
+  } catch (error) {
+    console.error('GitHub auth error:', error);
+    return res.status(500).json({ error: error.message || 'GitHub authentication failed' });
+  }
+});
+
+app.get('/api/auth/me', authenticate, (req, res) => {
+  return res.json({ user: formatSafeUser(req.user) });
+});
+
+// ============================================================
+// 2. ADMIN PANEL ROUTES
 // ============================================================
 
 app.post('/api/admin/request-otp', async (req, res) => {
   try {
     const { email } = req.body;
-    const adminEmail = (process.env.ADMIN_EMAIL || 'admin@webtoai.com').trim().toLowerCase();
+    const adminEmail = (process.env.ADMIN_EMAIL || 'webtoai26@gmail.com').trim().toLowerCase();
 
     if (!email || email.trim().toLowerCase() !== adminEmail) {
-      return res.status(403).json({ error: 'Unauthorized: Not an admin email address.' });
+      return res.status(403).json({ error: 'Unauthorized: Not an admin email.' });
     }
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    adminOtpStore[adminEmail] = {
-      otp,
-      expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
-    };
+    adminOtpStore[adminEmail] = { otp, expiresAt: Date.now() + 10 * 60 * 1000 };
+    console.log(`>>> WEBTO ADMIN OTP: ${otp} <<<`);
 
-    const emailSubject = '🔐 WEBTO AI Admin Access OTP';
-    const emailHtml = `
-      <div style="background:#070b14; color:#fff; padding:28px; border-radius:14px; font-family:sans-serif; max-width:440px; margin:auto;">
-        <h2 style="color:#60a5fa; margin:0 0 10px;">WEBTO AI Security</h2>
-        <p style="color:#94a3b8; font-size:13px;">Your one-time login authentication code is:</p>
-        <div style="background:#0e1626; border:1px solid #1e293b; padding:14px; border-radius:10px; text-align:center; margin:16px 0;">
-          <span style="font-size:26px; letter-spacing:6px; font-weight:bold; color:#38bdf8; font-family:monospace;">${otp}</span>
-        </div>
-        <p style="color:#64748b; font-size:11px;">This OTP expires in 10 minutes. If you did not request this, ignore this email.</p>
-      </div>
-    `;
-
-    // Try Resend first
     if (resend) {
       await resend.emails.send({
-        from: process.env.RESEND_FROM_EMAIL || 'WEBTO AI <onboarding@resend.dev>',
+        from: 'onboarding@resend.dev',
         to: [adminEmail],
-        subject: emailSubject,
-        html: emailHtml,
+        subject: 'WEBTO AI Admin Access OTP',
+        html: `<p>Your Admin OTP is: <b>${otp}</b></p>`,
       });
-      return res.json({ success: true, message: 'OTP sent to your email.' });
     }
 
-    // Try Nodemailer fallback
-    if (transporter) {
-      await transporter.sendMail({
-        from: `"WEBTO AI Security" <${process.env.ADMIN_EMAIL_SENDER}>`,
-        to: adminEmail,
-        subject: emailSubject,
-        html: emailHtml,
-      });
-      return res.json({ success: true, message: 'OTP sent to your email.' });
-    }
-
-    // Dev mode fallback
-    console.log(`[DEV OTP]: Code for ${adminEmail} is: ${otp}`);
-    return res.json({ success: true, devOtp: otp, message: 'OTP generated (Check console in dev mode).' });
+    return res.json({ success: true, message: 'OTP sent successfully.' });
   } catch (err) {
-    console.error('Admin OTP Dispatch Error:', err);
-    return res.status(500).json({ error: 'Failed to send admin OTP.' });
+    return res.status(500).json({ error: 'Failed to send OTP.' });
   }
 });
 
@@ -104,407 +386,78 @@ app.post('/api/admin/verify-otp', async (req, res) => {
     const record = adminOtpStore[cleanEmail];
 
     if (!record || record.otp !== (otp || '').trim() || Date.now() > record.expiresAt) {
-      return res.status(400).json({ error: 'Invalid or expired OTP code.' });
+      return res.status(400).json({ error: 'Invalid or expired OTP.' });
     }
 
     delete adminOtpStore[cleanEmail];
-
-    // Ensure admin user exists in DB
-    let adminUser = await prisma.user.findUnique({ where: { email: cleanEmail } });
-    if (!adminUser) {
-      adminUser = await prisma.user.create({
-        data: {
-          email: cleanEmail,
-          name: 'Admin User',
-          role: 'ADMIN',
-          freeBuildsTotal: 99999,
-        },
-      });
-    } else if (adminUser.role !== 'ADMIN') {
-      await prisma.user.update({ where: { id: adminUser.id }, data: { role: 'ADMIN' } });
-    }
-
-    const token = jwt.sign({ userId: adminUser.id, role: 'ADMIN' }, JWT_SECRET, { expiresIn: '30d' });
-    return res.json({ success: true, token, user: adminUser });
+    const token = jwt.sign({ role: 'ADMIN', email: cleanEmail }, JWT_SECRET, { expiresIn: '30d' });
+    return res.json({ success: true, token });
   } catch (err) {
-    console.error('Admin Verify Error:', err);
-    return res.status(500).json({ error: 'Failed to verify admin OTP.' });
+    return res.status(500).json({ error: 'Verification failed.' });
   }
 });
 
-// ============================================================
-// 2. LIVE DASHBOARD DATA & OVERVIEW (FROM POSTGRESQL PRISMA)
-// ============================================================
 const handleDashboardData = async (req, res) => {
   try {
-    const [
-      totalUsers,
-      totalProjects,
-      activeDeployments,
-      revenueResult,
-      creditsSoldResult,
-      users,
-      projects,
-      payments,
-      creditPackages,
-    ] = await Promise.all([
+    const [totalUsers, totalProjects, users, payments] = await Promise.all([
       prisma.user.count(),
       prisma.project.count(),
-      prisma.deployment ? prisma.deployment.count({ where: { status: 'READY' } }).catch(() => 0) : 0,
-      prisma.payment.aggregate({
-        _sum: { amount: true },
-        where: { status: 'SUCCESS' },
-      }).catch(() => ({ _sum: { amount: 0 } })),
-      prisma.payment.aggregate({
-        _sum: { creditsGranted: true },
-        where: { status: 'SUCCESS' },
-      }).catch(() => ({ _sum: { creditsGranted: 0 } })),
-      prisma.user.findMany({
-        orderBy: { createdAt: 'desc' },
-        include: { _count: { select: { projects: true } } },
-      }),
-      prisma.project.findMany({
-        take: 20,
-        orderBy: { updatedAt: 'desc' },
-        include: { user: { select: { name: true, email: true } } },
-      }).catch(() => []),
-      prisma.payment.findMany({
-        take: 20,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          user: { select: { name: true, email: true } },
-          creditPackage: { select: { name: true } },
-        },
-      }).catch(() => []),
-      prisma.creditPackage.findMany({
-        where: { isActive: true },
-        orderBy: { priceInInr: 'asc' },
-      }).catch(() => []),
+      prisma.user.findMany({ orderBy: { createdAt: 'desc' }, take: 50 }),
+      prisma.payment.findMany({ orderBy: { createdAt: 'desc' }, take: 50 }).catch(() => []),
     ]);
 
-    const rawRevenue = revenueResult?._sum?.amount || 0;
-    const formattedRevenue = `₹${rawRevenue.toLocaleString('en-IN')}`;
-    const totalCreditsSold = (creditsSoldResult?._sum?.creditsGranted || 0).toLocaleString('en-IN');
+    const successfulPayments = payments.filter((p) => p.status === 'SUCCESS');
+    const totalRevenue = successfulPayments.reduce((acc, curr) => acc + (curr.amount || 0), 0);
+    const creditsSold = successfulPayments.reduce((acc, curr) => acc + (curr.creditsGranted || curr.credits || 0), 0);
 
-    const formattedPackages = creditPackages.length > 0
-      ? creditPackages.map((p) => ({
-          id: p.id,
-          name: p.name,
-          price: `₹${p.priceInInr}`,
-          priceVal: p.priceInInr,
-          credits: `${p.credits} Credits`,
-          creditsVal: p.credits,
-          priceInInr: p.priceInInr,
-        }))
-      : [
-          { id: 'starter', name: 'Starter Plan', price: '₹99', priceVal: 99, credits: '100 Credits', creditsVal: 100, priceInInr: 99 },
-          { id: 'builder', name: 'Builder Plan', price: '₹399', priceVal: 399, credits: '500 Credits', creditsVal: 500, priceInInr: 399 },
-          { id: 'pro', name: 'Pro Plan', price: '₹999', priceVal: 999, credits: '1500 Credits', creditsVal: 1500, priceInInr: 999 },
-        ];
-
-    const statsObj = {
-      totalUsers: totalUsers.toLocaleString('en-IN'),
-      totalProjects: totalProjects.toLocaleString('en-IN'),
-      totalRevenue: formattedRevenue,
-      creditsSold: totalCreditsSold,
-      activeDeployments: (activeDeployments || totalProjects || 0).toString(),
-    };
-
-    const formattedUsers = users.map((u) => {
+    const safeUsers = users.map((u) => {
       const total = u.freeBuildsTotal ?? 3;
       const used = u.freeBuildsUsed ?? 0;
-      const balance = Math.max(0, total - used) + (u.credits || 0);
-
       return {
         id: u.id,
-        name: u.name || 'Anonymous User',
+        name: u.name || 'Anonymous',
         email: u.email,
-        credits: balance,
-        projectsCount: u._count?.projects || 0,
-        authProvider: u.authProvider || 'LOCAL',
-        role: u.role,
-        joined: new Date(u.createdAt).toLocaleDateString('en-GB', {
-          day: 'numeric',
-          month: 'short',
-          year: 'numeric',
-        }),
+        credits: Math.max(0, total - used) + (u.credits || 0),
+        role: u.role || 'USER',
+        createdAt: u.createdAt,
       };
     });
 
-    const formattedTransactions = payments.map((p) => ({
-      id: p.razorpayPaymentId || p.razorpayOrderId || p.id,
-      user: p.user?.name || p.user?.email || 'Anonymous',
-      userEmail: p.user?.email || '',
-      amount: `₹${p.amount}`,
-      status: p.status === 'SUCCESS' ? 'Success' : p.status === 'FAILED' ? 'Failed' : 'Pending',
-      creditsGranted: p.creditsGranted,
-      date: new Date(p.createdAt).toLocaleDateString('en-GB', {
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric',
-      }),
-    }));
-
-    return res.status(200).json({
-      // For App.jsx overview call
+    return res.json({
       totalUsers,
       totalProjects,
-      totalRevenue: rawRevenue,
-      // Dashboard data metrics
-      metrics: statsObj,
-      stats: statsObj,
-      users: formattedUsers,
-      projects: projects.map((p) => ({
-        id: p.id,
-        name: p.name,
-        type: p.type,
-        ownerName: p.user?.name || 'Anonymous',
-        ownerEmail: p.user?.email || 'N/A',
-        isDeployed: p.isDeployed,
-        deployedUrl: p.deployedUrl,
-        updatedAt: new Date(p.updatedAt).toLocaleDateString('en-GB', {
-          day: 'numeric',
-          month: 'short',
-          year: 'numeric',
-        }),
-      })),
-      transactions: formattedTransactions,
-      payments: formattedTransactions,
-      packages: formattedPackages,
-      creditPackages: formattedPackages,
+      totalRevenue,
+      creditsSold,
+      users: safeUsers,
+      payments,
+      transactions: payments,
+      metrics: {
+        totalUsers: totalUsers.toString(),
+        totalProjects: totalProjects.toString(),
+        totalRevenue: `₹${totalRevenue}`,
+        creditsSold: creditsSold.toString(),
+      },
     });
   } catch (error) {
-    console.error('Admin dashboard data fetch error:', error);
-    res.status(500).json({ error: 'Failed to retrieve admin dashboard records' });
+    return res.status(500).json({ error: 'Failed to fetch dashboard data' });
   }
 };
 
-app.get('/api/admin/dashboard-data', handleDashboardData);
 app.get('/api/admin/overview', handleDashboardData);
-app.get('/api/admin/payments', handleDashboardData);
+app.get('/api/admin/dashboard-data', handleDashboardData);
 
-// ============================================================
-// 3. GRANT FREE CREDITS GLOBALLY (ALL USERS)
-// ============================================================
-const handleGrantGlobalCredits = async (req, res) => {
-  try {
-    const { amount } = req.body;
-    const addAmount = parseInt(amount, 10);
-
-    if (isNaN(addAmount) || addAmount <= 0) {
-      return res.status(400).json({ error: 'Please enter a valid credit number' });
-    }
-
-    const result = await prisma.user.updateMany({
-      data: {
-        freeBuildsTotal: { increment: addAmount },
-      },
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: `Granted +${addAmount} build credits to all ${result.count} registered users!`,
-    });
-  } catch (error) {
-    console.error('Global credit error:', error);
-    res.status(500).json({ error: 'Failed to distribute credits globally' });
-  }
-};
-
-app.post('/api/admin/credits/grant-global', handleGrantGlobalCredits);
-app.post('/api/admin/credits/global', handleGrantGlobalCredits);
-
-// ============================================================
-// 4. ADJUST CREDITS FOR A SPECIFIC USER
-// ============================================================
-const handleAdjustUserCredits = async (req, res) => {
-  try {
-    const { email, userId, delta, amount } = req.body;
-    const change = parseInt(delta ?? amount, 10);
-
-    let whereClause = {};
-    if (email) whereClause = { email: email.trim().toLowerCase() };
-    else if (userId) whereClause = { id: userId };
-    else return res.status(400).json({ error: 'User email or ID is required' });
-
-    const user = await prisma.user.findFirst({ where: whereClause });
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const updatedUser = await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        freeBuildsTotal: { increment: change },
-      },
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: `Adjusted credits for ${user.name || user.email}`,
-      user: updatedUser,
-    });
-  } catch (error) {
-    console.error('User credit adjustment error:', error);
-    res.status(500).json({ error: 'Failed to update user credits' });
-  }
-};
-
-app.post('/api/admin/credits/adjust-user', handleAdjustUserCredits);
-app.post('/api/admin/credits/user', handleAdjustUserCredits);
-
-// ============================================================
-// 5. DYNAMIC PACKAGE SYNC (PERSISTENT PRICING IN POSTGRESQL)
-// ============================================================
+// Packages
 app.get('/api/payments/packages', async (req, res) => {
-  try {
-    const packages = await prisma.creditPackage.findMany({
-      where: { isActive: true },
-      orderBy: { priceInInr: 'asc' },
-    });
-
-    const packageMap = {
-      starter: { name: 'Starter Plan', priceInInr: 99, credits: 100 },
-      builder: { name: 'Builder Plan', priceInInr: 399, credits: 500 },
-      pro: { name: 'Pro Plan', priceInInr: 999, credits: 1500 },
-    };
-
-    packages.forEach((pkg) => {
-      packageMap[pkg.id] = {
-        name: pkg.name,
-        priceInInr: pkg.priceInInr,
-        credits: pkg.credits,
-      };
-    });
-
-    return res.json({ packages: packageMap, list: packages });
-  } catch (err) {
-    return res.status(500).json({ error: 'Failed to load packages' });
-  }
+  const packageMap = {
+    starter: { name: 'Starter', priceInInr: 149, credits: 100 },
+    builder: { name: 'Builder', priceInInr: 449, credits: 500 },
+    pro: { name: 'Pro', priceInInr: 999, credits: 1500 },
+  };
+  return res.json({ packages: packageMap });
 });
+app.get('/api/packages', (req, res) => res.redirect('/api/payments/packages'));
 
-// Handles BOTH single and multi package saves
-const handlePackageSaveOrUpdate = async (req, res) => {
-  try {
-    const { 
-      id, 
-      packageId, 
-      name, 
-      credits, 
-      price, 
-      priceInInr, 
-      popular,
-      starterPrice,
-      starterCredits,
-      builderPrice,
-      builderCredits,
-      proPrice,
-      proCredits
-    } = req.body;
-
-    const operations = [];
-
-    // Supports App.jsx payload
-    if (starterPrice !== undefined || starterCredits !== undefined) {
-      operations.push(
-        prisma.creditPackage.upsert({
-          where: { id: 'starter' },
-          update: {
-            ...(starterPrice !== undefined && { priceInInr: Number(starterPrice) }),
-            ...(starterCredits !== undefined && { credits: Number(starterCredits) }),
-            isActive: true,
-          },
-          create: {
-            id: 'starter',
-            name: 'Starter Plan',
-            priceInInr: Number(starterPrice) || 99,
-            credits: Number(starterCredits) || 100,
-            isActive: true,
-          },
-        })
-      );
-    }
-    if (builderPrice !== undefined || builderCredits !== undefined) {
-      operations.push(
-        prisma.creditPackage.upsert({
-          where: { id: 'builder' },
-          update: {
-            ...(builderPrice !== undefined && { priceInInr: Number(builderPrice) }),
-            ...(builderCredits !== undefined && { credits: Number(builderCredits) }),
-            isActive: true,
-          },
-          create: {
-            id: 'builder',
-            name: 'Builder Plan',
-            priceInInr: Number(builderPrice) || 399,
-            credits: Number(builderCredits) || 500,
-            isActive: true,
-          },
-        })
-      );
-    }
-    if (proPrice !== undefined || proCredits !== undefined) {
-      operations.push(
-        prisma.creditPackage.upsert({
-          where: { id: 'pro' },
-          update: {
-            ...(proPrice !== undefined && { priceInInr: Number(proPrice) }),
-            ...(proCredits !== undefined && { credits: Number(proCredits) }),
-            isActive: true,
-          },
-          create: {
-            id: 'pro',
-            name: 'Pro Plan',
-            priceInInr: Number(proPrice) || 999,
-            credits: Number(proCredits) || 1500,
-            isActive: true,
-          },
-        })
-      );
-    }
-
-    // Supports single package updates
-    const targetId = String(id || packageId || '').toLowerCase().trim();
-    if (targetId && operations.length === 0) {
-      const finalCredits = Number(credits);
-      const finalPrice = Number(priceInInr ?? price);
-
-      operations.push(
-        prisma.creditPackage.upsert({
-          where: { id: targetId },
-          update: {
-            ...(name && { name }),
-            ...(!isNaN(finalCredits) && { credits: finalCredits }),
-            ...(!isNaN(finalPrice) && { priceInInr: finalPrice }),
-            isActive: true,
-          },
-          create: {
-            id: targetId,
-            name: name || (targetId.charAt(0).toUpperCase() + targetId.slice(1)),
-            credits: !isNaN(finalCredits) ? finalCredits : 100,
-            priceInInr: !isNaN(finalPrice) ? finalPrice : 99,
-            popular: !!popular,
-            isActive: true,
-          },
-        })
-      );
-    }
-
-    await Promise.all(operations);
-    console.log('✅ Package updated in PostgreSQL successfully');
-    return res.json({ success: true, message: 'Packages saved successfully' });
-  } catch (err) {
-    console.error('Package update error:', err);
-    return res.status(500).json({ error: err.message || 'Failed to update package in database' });
-  }
-};
-
-app.post('/api/admin/packages/save', handlePackageSaveOrUpdate);
-app.post('/api/admin/packages/update', handlePackageSaveOrUpdate);
-
-// ============================================================
-// START SERVER
-// ============================================================
+// Start Server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`WEBTO AI Admin Server running on port ${PORT}`);
+  console.log(`WEBTO AI Full Backend running on port ${PORT}`);
 });
