@@ -395,38 +395,60 @@ app.post('/api/auth/oauth', async (req, res) => {
   }
 });
 
-app.post('/api/auth/google', async (req, res) => {
+
+    app.post('/api/auth/google', async (req, res) => {
   try {
     const { access_token, credential, token: incomingToken } = req.body;
-    const tokenToUse = access_token || credential || incomingToken;
+    const tokenToUse = credential || incomingToken || access_token;
 
     if (!tokenToUse) {
-      return res.status(400).json({ error: 'Google credential or access token is required' });
+      return res.status(400).json({ error: 'Google credential or access token is required.' });
     }
 
     let profile = null;
 
-    // 1. Try resolving as access_token first
-    if (access_token) {
+    // 1. Direct JWT ID Token Decode (Standard Google One Tap & Google Identity Services)
+    if (typeof tokenToUse === 'string' && tokenToUse.split('.').length === 3) {
       try {
-        const googleRes = await fetch('[https://www.googleapis.com/oauth2/v3/userinfo](https://www.googleapis.com/oauth2/v3/userinfo)', {
-          headers: { Authorization: `Bearer ${access_token}` },
+        const payloadBase64 = tokenToUse.split('.')[1];
+        const decodedPayload = Buffer.from(payloadBase64, 'base64').toString('utf8');
+        const parsed = JSON.parse(decodedPayload);
+        if (parsed && parsed.email) {
+          profile = {
+            email: parsed.email,
+            name: parsed.name || parsed.given_name || parsed.email.split('@')[0],
+            picture: parsed.picture || null,
+          };
+        }
+      } catch (decodeErr) {
+        console.warn('Direct JWT decode error:', decodeErr.message);
+      }
+    }
+
+    // 2. Fallback: Query Google userinfo endpoint if it is an OAuth2 access token
+    if (!profile) {
+      try {
+        const googleRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: `Bearer ${tokenToUse}` },
         });
         if (googleRes.ok) {
           profile = await googleRes.json();
         }
-      } catch (_) {}
+      } catch (fetchErr) {
+        console.warn('Google userinfo fetch error:', fetchErr.message);
+      }
     }
 
-    // 2. If access_token failed or frontend sent an ID token / credential
+    // 3. Fallback: Query tokeninfo
     if (!profile) {
-      const tokenParam = credential || incomingToken || access_token;
       try {
-        const verifyRes = await fetch(`[https://oauth2.googleapis.com/tokeninfo?id_token=$](https://oauth2.googleapis.com/tokeninfo?id_token=$){encodeURIComponent(tokenParam)}`);
+        const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(tokenToUse)}`);
         if (verifyRes.ok) {
           profile = await verifyRes.json();
         }
-      } catch (_) {}
+      } catch (tokenInfoErr) {
+        console.warn('Google tokeninfo fetch error:', tokenInfoErr.message);
+      }
     }
 
     if (!profile || !profile.email) {
@@ -452,13 +474,19 @@ app.post('/api/auth/google', async (req, res) => {
       });
     }
 
-    const token = jwt.sign({ userId: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+    const token = jwt.sign(
+      { userId: user.id, email: user.email, role: user.role },
+      JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
     return res.status(200).json({ success: true, token, user: formatSafeUser(user) });
   } catch (error) {
-    console.error('Google authentication error:', error);
-    return res.status(500).json({ error: 'Google authentication failed' });
+    console.error('[GOOGLE AUTH ROUTE CRASH]:', error);
+    return res.status(500).json({ error: error.message || 'Google authentication failed.' });
   }
 });
+
 
 app.post('/api/auth/github', async (req, res) => {
   try {
