@@ -116,33 +116,42 @@ const authenticate = async (req, res, next) => {
 // ============================================================
 // AI SYNTHESIS HELPERS
 // ============================================================
+
 function cleanAndParseJSON(rawText) {
   let cleaned = (rawText || '').trim();
-  cleaned = cleaned.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
 
+  // Strip Markdown code block wrappers if present
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+  }
+
+  // Attempt direct parse first
   try {
     return JSON.parse(cleaned);
-  } catch (err) {
-    const sanitized = cleaned.replace(/"((?:\\.|[^"\\])*)"/gs, (match) => {
-      return match
-        .replace(/\n/g, '\\n')
-        .replace(/\r/g, '\\r')
-        .replace(/\t/g, '\\t');
-    });
-    return JSON.parse(sanitized);
+  } catch (initialErr) {
+    // Extract outer JSON structure if model included extra text
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[0]);
+      } catch (_) {}
+    }
+
+    // Fallback: repair unescaped control characters inside string literals
+    try {
+      const sanitized = cleaned.replace(/"((?:\\.|[^"\\])*)"/gs, (match) => {
+        return match
+          .replace(/\n/g, '\\n')
+          .replace(/\r/g, '\\r')
+          .replace(/\t/g, '\\t');
+      });
+      return JSON.parse(sanitized);
+    } catch (fallbackErr) {
+      console.error('[JSON PARSE RAW OUTPUT]:', cleaned.slice(0, 1000));
+      throw new Error(`Failed to parse AI response: ${initialErr.message}`);
+    }
   }
 }
-
-const SYSTEM_PROMPT = `
-You are the Lead Full-Stack Software Architect and UI/UX Designer for WEBTO AI.
-Generate a complete, single-page full-stack web application based on the user's prompt.
-
-CRITICAL RULES:
-1. "entryHtml": MUST be a 100% complete, working HTML5 file with Tailwind CSS (<script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>) and FontAwesome 6 (<link rel="stylesheet" href="[https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css](https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css)" />).
-2. Implement full interactive state in JavaScript (window.state, dynamic filters, interactive cart/counter actions, modal popups).
-3. "files": Provide an array of modular files ({ name, path, content }).
-4. Return ONLY a valid JSON object with keys "entryHtml" and "files". No markdown backticks.
-`;
 
 async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingCode = '', image = null) {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
@@ -176,6 +185,7 @@ async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingC
       },
     });
   }
+
   const endpoint = [
     'https:',
     '',
@@ -186,8 +196,7 @@ async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingC
   ].join('/');
 
   const url = `${endpoint}?key=${encodeURIComponent(apiKey)}`;
-  
-       
+
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -198,6 +207,28 @@ async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingC
       contents: [{ role: 'user', parts }],
       generationConfig: {
         responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'OBJECT',
+          properties: {
+            entryHtml: {
+              type: 'STRING',
+              description: 'Complete standalone HTML file with Tailwind CSS CDN and functional interactive JS code.',
+            },
+            files: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  name: { type: 'STRING' },
+                  path: { type: 'STRING' },
+                  content: { type: 'STRING' },
+                },
+                required: ['name', 'path', 'content'],
+              },
+            },
+          },
+          required: ['entryHtml', 'files'],
+        },
       },
     }),
   });
@@ -211,6 +242,10 @@ async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingC
   const textOutput = data.candidates?.[0]?.content?.parts?.[0]?.text;
   return cleanAndParseJSON(textOutput);
 }
+
+
+
+  
 
 
 async function generateChatReply(projectName, projectType, messages) {
