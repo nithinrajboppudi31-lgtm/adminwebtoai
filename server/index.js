@@ -492,11 +492,13 @@ app.get('/api/projects/:id', authenticate, async (req, res) => {
 });
 
 // POST /api/generate/:id
+// POST /api/generate/:id
 app.post('/api/generate/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const { prompt, image } = req.body;
 
+    // 1. Credit balance validation
     if (req.user.role !== 'ADMIN') {
       const remaining = Math.max(0, (req.user.freeBuildsTotal ?? 3) - (req.user.freeBuildsUsed ?? 0)) + (req.user.credits || 0);
       if (remaining <= 0) {
@@ -504,37 +506,25 @@ app.post('/api/generate/:id', authenticate, async (req, res) => {
       }
     }
 
+    // 2. Fetch project without invalid 'files' relation
     const project = await prisma.project.findUnique({
       where: { id },
-      include: { files: true },
     });
     if (!project) return res.status(404).json({ error: 'Project not found.' });
 
+    // 3. Synthesize code via Gemini
     const aiResult = await generateProjectCode(prompt, project.type, project.entryHtml, image);
 
-    // Save project files to ProjectFile table
-    if (aiResult.files && Array.isArray(aiResult.files)) {
-      await prisma.projectFile.deleteMany({ where: { projectId: id } });
-      await prisma.projectFile.createMany({
-        data: aiResult.files.map((f) => ({
-          projectId: id,
-          name: f.name || 'file.txt',
-          path: f.path || f.name || 'file.txt',
-          content: f.content || '',
-        })),
-      });
-    }
-
+    // 4. Update project record
     const updatedProject = await prisma.project.update({
       where: { id },
       data: {
         entryHtml: aiResult.entryHtml,
         updatedAt: new Date(),
       },
-      include: { files: true },
     });
 
-    // Deduct user build credit
+    // 5. Deduct user credit
     let updatedUser = req.user;
     if (req.user.role !== 'ADMIN') {
       updatedUser = await prisma.user.update({
@@ -545,10 +535,11 @@ app.post('/api/generate/:id', authenticate, async (req, res) => {
 
     const finalCredits = Math.max(0, (updatedUser.freeBuildsTotal ?? 3) - (updatedUser.freeBuildsUsed ?? 0)) + (updatedUser.credits || 0);
 
+    // Return the generated files array and entryHtml directly to frontend state
     return res.json({
       success: true,
       entryHtml: updatedProject.entryHtml,
-      files: updatedProject.files,
+      files: aiResult.files || [],
       remainingCredits: finalCredits,
     });
   } catch (error) {
@@ -556,6 +547,7 @@ app.post('/api/generate/:id', authenticate, async (req, res) => {
     return res.status(500).json({ error: error.message || 'AI generation failed' });
   }
 });
+
 
 // POST /api/chat/:id
 app.post('/api/chat/:id', authenticate, async (req, res) => {
