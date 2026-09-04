@@ -177,13 +177,13 @@ async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingC
     });
   }
 
-    const endpoint = [
+     const endpoint = [
     'https:',
     '',
     'generativelanguage.googleapis.com',
-    'v1',
+    'v1beta',
     'models',
-    'gemini-1.5-flash:generateContent'
+    'gemini-2.5-flash:generateContent'
   ].join('/');
 
   const url = `${endpoint}?key=${encodeURIComponent(apiKey)}`;
@@ -233,13 +233,13 @@ INSTRUCTIONS:
 2. Always end with 3 suggestion chips strictly formatted as: [CHIPS: Option 1 | Option 2 | Option 3]
 `;
 
-      const endpoint = [
+        const endpoint = [
     'https:',
     '',
     'generativelanguage.googleapis.com',
-    'v1',
+    'v1beta',
     'models',
-    'gemini-1.5-flash:generateContent'
+    'gemini-2.5-flash:generateContent'
   ].join('/');
 
   const url = `${endpoint}?key=${encodeURIComponent(apiKey)}`;
