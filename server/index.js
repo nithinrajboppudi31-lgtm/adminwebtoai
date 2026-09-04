@@ -436,6 +436,7 @@ app.get('/api/auth/me', authenticate, (req, res) => {
 // ============================================================
 
 // POST /api/projects
+// POST /api/projects
 app.post('/api/projects', authenticate, async (req, res) => {
   try {
     const { name, description, type } = req.body;
@@ -458,9 +459,6 @@ app.post('/api/projects', authenticate, async (req, res) => {
         slug: uniqueSlug,
         entryHtml: '',
       },
-      include: {
-        files: true,
-      },
     });
 
     return res.status(201).json({ success: true, project });
@@ -469,6 +467,7 @@ app.post('/api/projects', authenticate, async (req, res) => {
     return res.status(500).json({ error: error.message || 'Failed to create project in database.' });
   }
 });
+
 
 // GET /api/projects/:id
 app.get('/api/projects/:id', authenticate, async (req, res) => {
