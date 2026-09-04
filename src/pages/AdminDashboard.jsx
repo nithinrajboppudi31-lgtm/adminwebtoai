@@ -87,59 +87,71 @@ export default function AdminDashboard() {
   };
 
   // Save Package Update Directly to PostgreSQL
-  const handleSavePackage = async (e) => {
+    const handleSavePackage = async (e) => {
     e.preventDefault();
     if (!selectedPkg) return;
     setSaveLoading(true);
 
-    const targetId = String(selectedPkg.id || selectedPkg.name).toLowerCase().split(' ')[0].trim();
-    const newPriceVal = Number(editPrice);
-    const newCreditsVal = Number(editCredits);
+    // Normalize package ID: 'starter', 'builder', or 'pro'
+    const targetId = String(selectedPkg.id || selectedPkg.name)
+      .toLowerCase()
+      .split(' ')[0]
+      .trim();
 
-    // Optimistic UI update
-    setCreditPackages((prev) =>
-      prev.map((pkg) => {
-        const currentId = String(pkg.id || pkg.name).toLowerCase().split(' ')[0].trim();
-        if (currentId === targetId) {
-          return {
-            ...pkg,
-            price: `₹${newPriceVal}`,
-            priceVal: newPriceVal,
-            credits: `${newCreditsVal} Credits`,
-            creditsVal: newCreditsVal,
-          };
-        }
-        return pkg;
-      })
-    );
+    const numericPrice = Number(String(editPrice).replace(/[^0-9]/g, ''));
+    const numericCredits = Number(String(editCredits).replace(/[^0-9]/g, ''));
 
     try {
       const res = await fetch(`${BACKEND_URL}/api/admin/packages/update`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
         body: JSON.stringify({
           packageId: targetId,
-          price: newPriceVal,
-          credits: newCreditsVal,
-          name: selectedPkg.name,
+          price: numericPrice,
+          credits: numericCredits,
+          name: selectedPkg.name || targetId,
         }),
       });
 
-      const result = await res.json();
-      if (!res.ok || result.error) {
-        throw new Error(result.error || 'Server rejected package update');
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'Server rejected database update');
       }
 
+      // Immediately update local card state
+      setCreditPackages((prevPackages) =>
+        prevPackages.map((item) => {
+          const currentId = String(item.id || item.name).toLowerCase().split(' ')[0].trim();
+          if (currentId === targetId) {
+            return {
+              ...item,
+              price: `₹${numericPrice}`,
+              priceVal: numericPrice,
+              credits: `${numericCredits} Credits`,
+              creditsVal: numericCredits,
+            };
+          }
+          return item;
+        })
+      );
+
       setShowPackageModal(false);
+      alert(`Success: Updated ${targetId.toUpperCase()} to ₹${numericPrice} and ${numericCredits} Credits!`);
+
+      // Refetch live database state
       await loadDashboardData();
     } catch (err) {
-      console.error('Failed to update package:', err);
-      alert(`Could not save: ${err.message}`);
-      loadDashboardData();
+      console.error('Save failed:', err);
+      alert(`Update failed: ${err.message}`);
     } finally {
       setSaveLoading(false);
     }
   };
+  
 
   // Grant Global Credits Handler
   const handleGlobalCreditGrant = async () => {
