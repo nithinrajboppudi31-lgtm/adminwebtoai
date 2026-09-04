@@ -14,7 +14,7 @@ const prisma = new PrismaClient();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'webto_ai_super_secure_jwt_secret_key_2026';
 
-// Password hashing helper using Node's native crypto module
+// Native SHA256 password hashing
 const hashPassword = (pw) => crypto.createHash('sha256').update(pw).digest('hex');
 
 const allowedOrigins = [
@@ -114,7 +114,7 @@ const authenticate = async (req, res, next) => {
 };
 
 // ============================================================
-// AI SYNTHESIS VIA NATIVE FETCH
+// AI SYNTHESIS HELPERS
 // ============================================================
 function cleanAndParseJSON(rawText) {
   let cleaned = (rawText || '').trim();
@@ -139,13 +139,13 @@ Generate a complete, single-page full-stack web application based on the user's 
 
 CRITICAL RULES:
 1. "entryHtml": MUST be a 100% complete, working HTML5 file with Tailwind CSS (<script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>) and FontAwesome 6 (<link rel="stylesheet" href="[https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css](https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css)" />).
-2. Implement full interactive state in JavaScript (window.state, search filters, interactive cart/counter actions, modal popups).
+2. Implement full interactive state in JavaScript (window.state, dynamic filters, interactive cart/counter actions, modal popups).
 3. "files": Provide an array of modular files ({ name, path, content }).
 4. Return ONLY a valid JSON object with keys "entryHtml" and "files". No markdown backticks.
 `;
 
 async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingCode = '', image = null) {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey) throw new Error('GEMINI_API_KEY is not configured on Render.');
 
   let fullPrompt = `${SYSTEM_PROMPT}\n\nProject Architecture Type: ${projectType}\nUser Requirements:\n${prompt}`;
@@ -177,11 +177,14 @@ async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingC
     });
   }
 
-    const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
-  
+  const url = `[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$){apiKey}`;
+
   const response = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
+    },
     body: JSON.stringify({
       contents: [{ role: 'user', parts }],
       generationConfig: {
@@ -201,7 +204,7 @@ async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingC
 }
 
 async function generateChatReply(projectName, projectType, messages) {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey) throw new Error('GEMINI_API_KEY missing.');
 
   const formattedHistory = messages
@@ -220,11 +223,14 @@ INSTRUCTIONS:
 2. Always end with 3 suggestion chips strictly formatted as: [CHIPS: Option 1 | Option 2 | Option 3]
 `;
 
-    const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
+  const url = `[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$){apiKey}`;
 
   const response = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
+    },
     body: JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
     }),
@@ -432,17 +438,13 @@ app.get('/api/auth/me', authenticate, (req, res) => {
 });
 
 // ============================================================
-// 2. PROJECT CREATION & WORKSPACE ROUTES (Schema-matched)
+// 2. PROJECT CREATION & WORKSPACE ROUTES
 // ============================================================
-
-// POST /api/projects
-// POST /api/projects
 app.post('/api/projects', authenticate, async (req, res) => {
   try {
     const { name, description, type } = req.body;
     const userId = req.user.id;
 
-    // Generate unique slug
     const baseSlug = (name || 'project')
       .toLowerCase()
       .replace(/[^a-z0-9]/g, '-')
@@ -468,15 +470,12 @@ app.post('/api/projects', authenticate, async (req, res) => {
   }
 });
 
-
-// GET /api/projects/:id
 app.get('/api/projects/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const project = await prisma.project.findUnique({
       where: { id },
       include: {
-        files: true,
         user: true,
       },
     });
@@ -491,14 +490,11 @@ app.get('/api/projects/:id', authenticate, async (req, res) => {
   }
 });
 
-// POST /api/generate/:id
-// POST /api/generate/:id
 app.post('/api/generate/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const { prompt, image } = req.body;
 
-    // 1. Credit balance validation
     if (req.user.role !== 'ADMIN') {
       const remaining = Math.max(0, (req.user.freeBuildsTotal ?? 3) - (req.user.freeBuildsUsed ?? 0)) + (req.user.credits || 0);
       if (remaining <= 0) {
@@ -506,16 +502,13 @@ app.post('/api/generate/:id', authenticate, async (req, res) => {
       }
     }
 
-    // 2. Fetch project without invalid 'files' relation
     const project = await prisma.project.findUnique({
       where: { id },
     });
     if (!project) return res.status(404).json({ error: 'Project not found.' });
 
-    // 3. Synthesize code via Gemini
     const aiResult = await generateProjectCode(prompt, project.type, project.entryHtml, image);
 
-    // 4. Update project record
     const updatedProject = await prisma.project.update({
       where: { id },
       data: {
@@ -524,7 +517,6 @@ app.post('/api/generate/:id', authenticate, async (req, res) => {
       },
     });
 
-    // 5. Deduct user credit
     let updatedUser = req.user;
     if (req.user.role !== 'ADMIN') {
       updatedUser = await prisma.user.update({
@@ -535,7 +527,6 @@ app.post('/api/generate/:id', authenticate, async (req, res) => {
 
     const finalCredits = Math.max(0, (updatedUser.freeBuildsTotal ?? 3) - (updatedUser.freeBuildsUsed ?? 0)) + (updatedUser.credits || 0);
 
-    // Return the generated files array and entryHtml directly to frontend state
     return res.json({
       success: true,
       entryHtml: updatedProject.entryHtml,
@@ -548,8 +539,6 @@ app.post('/api/generate/:id', authenticate, async (req, res) => {
   }
 });
 
-
-// POST /api/chat/:id
 app.post('/api/chat/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
@@ -563,7 +552,6 @@ app.post('/api/chat/:id', authenticate, async (req, res) => {
   }
 });
 
-// PATCH /api/projects/:id/visibility
 app.patch('/api/projects/:id/visibility', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
@@ -580,7 +568,6 @@ app.patch('/api/projects/:id/visibility', authenticate, async (req, res) => {
   }
 });
 
-// PATCH /api/projects/:id/seo
 app.patch('/api/projects/:id/seo', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
@@ -601,7 +588,6 @@ app.patch('/api/projects/:id/seo', authenticate, async (req, res) => {
   }
 });
 
-// POST /api/deploy/:id
 app.post('/api/deploy/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
@@ -621,7 +607,7 @@ app.post('/api/deploy/:id', authenticate, async (req, res) => {
 });
 
 // ============================================================
-// 3. ADMIN PANEL & DASHBOARD
+// 3. ADMIN PANEL & MANAGEMENT
 // ============================================================
 app.post('/api/admin/request-otp', async (req, res) => {
   try {
@@ -634,7 +620,6 @@ app.post('/api/admin/request-otp', async (req, res) => {
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     adminOtpStore[adminEmail] = { otp, expiresAt: Date.now() + 10 * 60 * 1000 };
-    console.log(`>>> WEBTO ADMIN OTP: ${otp} <<<`);
 
     if (resend) {
       await resend.emails.send({
