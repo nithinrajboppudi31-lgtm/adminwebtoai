@@ -21,7 +21,8 @@ import {
   Gift,
   Search,
   Sparkles,
-  RefreshCw
+  RefreshCw,
+  AlertCircle
 } from 'lucide-react';
 
 const BACKEND_URL = 'https://webtoai-backend.onrender.com';
@@ -30,6 +31,7 @@ export default function AdminDashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('Dashboard');
   const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
 
   // Live database states
   const [stats, setStats] = useState({
@@ -58,42 +60,60 @@ export default function AdminDashboard() {
   // Fetch Live PostgreSQL Data
   const loadDashboardData = async () => {
     setLoading(true);
+    setErrorMessage('');
     try {
-      const res = await fetch(`${BACKEND_URL}/api/admin/dashboard-data`);
-      if (!res.ok) throw new Error(`Server returned HTTP ${res.status}`);
+      const token = localStorage.getItem('token') || localStorage.getItem('adminToken');
+      const headers = {
+        'Accept': 'application/json',
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      const res = await fetch(`${BACKEND_URL}/api/admin/dashboard-data`, { headers });
+      
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${res.statusText || 'Failed to fetch'}`);
+      }
+
       const data = await res.json();
 
       // Maps both metrics & stats keys
       const m = data.metrics || data.stats;
       if (m) {
         setStats({
-          totalUsers: m.totalUsers || '0',
-          totalProjects: m.totalProjects || '0',
-          totalRevenue: m.totalRevenue || '₹0',
-          creditsSold: m.creditsSold || '0',
-          activeDeployments: m.activeDeployments || '0',
+          totalUsers: String(m.totalUsers ?? '0'),
+          totalProjects: String(m.totalProjects ?? '0'),
+          totalRevenue: String(m.totalRevenue ?? '₹0'),
+          creditsSold: String(m.creditsSold ?? '0'),
+          activeDeployments: String(m.activeDeployments ?? '0'),
         });
       }
 
-      if (data.users) setUsersList(data.users);
-      if (data.transactions) setTransactions(data.transactions);
+      if (Array.isArray(data.users)) setUsersList(data.users);
+      if (Array.isArray(data.transactions)) setTransactions(data.transactions);
 
       // Maps both packages & creditPackages keys
       const pkgs = data.packages || data.creditPackages;
       if (pkgs && Array.isArray(pkgs)) {
         setCreditPackages(
-          pkgs.map((p) => ({
-            id: p.id,
-            name: p.name,
-            price: `₹${p.priceInInr || p.priceVal || String(p.price || '').replace(/[^0-9]/g, '')}`,
-            priceVal: Number(p.priceInInr || p.priceVal || String(p.price || '').replace(/[^0-9]/g, '')),
-            credits: `${p.creditsVal || p.credits || ''}`.includes('Credits') ? p.credits : `${p.credits || p.creditsVal} Credits`,
-            creditsVal: Number(String(p.creditsVal || p.credits || '').replace(/[^0-9]/g, '')),
-          }))
+          pkgs.map((p) => {
+            const numPrice = Number(p.priceVal ?? p.priceInInr ?? String(p.price ?? '').replace(/[^0-9]/g, '')) || 0;
+            const numCredits = Number(p.creditsVal ?? p.credits ?? String(p.credits ?? '').replace(/[^0-9]/g, '')) || 0;
+            return {
+              id: p.id,
+              name: p.name || 'Package',
+              price: `₹${numPrice}`,
+              priceVal: numPrice,
+              credits: `${numCredits} Credits`,
+              creditsVal: numCredits,
+            };
+          })
         );
       }
     } catch (err) {
       console.error('Error fetching admin data:', err);
+      setErrorMessage(err.message || 'Could not connect to backend server');
     } finally {
       setLoading(false);
     }
@@ -139,9 +159,13 @@ export default function AdminDashboard() {
     );
 
     try {
+      const token = localStorage.getItem('token') || localStorage.getItem('adminToken');
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const res = await fetch(`${BACKEND_URL}/api/admin/packages/save`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           id: targetId,
           packageId: targetId,
@@ -171,9 +195,13 @@ export default function AdminDashboard() {
   // Grant Global Credits Handler
   const handleGlobalCreditGrant = async () => {
     try {
+      const token = localStorage.getItem('token') || localStorage.getItem('adminToken');
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const res = await fetch(`${BACKEND_URL}/api/admin/credits/grant-global`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ amount: creditAmount }),
       });
 
@@ -189,9 +217,13 @@ export default function AdminDashboard() {
   // Adjust Specific User Credit Handler
   const handleUserCreditAdjust = async (user, delta) => {
     try {
+      const token = localStorage.getItem('token') || localStorage.getItem('adminToken');
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
       const res = await fetch(`${BACKEND_URL}/api/admin/credits/adjust-user`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ email: user.email, userId: user.id, delta }),
       });
 
@@ -330,6 +362,14 @@ export default function AdminDashboard() {
             </div>
           </div>
         </header>
+
+        {/* Live Debug Banner: shows on screen if a fetch error occurs */}
+        {errorMessage && (
+          <div className="mx-6 mt-4 p-3 bg-red-50 border border-red-200 rounded-xl flex items-center gap-2 text-xs font-bold text-red-700">
+            <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+            <span>Connection Warning: {errorMessage}</span>
+          </div>
+        )}
 
         <div className="p-6 space-y-6 max-w-7xl mx-auto w-full">
           {/* Top 5 Metric Cards */}
@@ -677,4 +717,4 @@ export default function AdminDashboard() {
       )}
     </div>
   );
-}                    
+}
