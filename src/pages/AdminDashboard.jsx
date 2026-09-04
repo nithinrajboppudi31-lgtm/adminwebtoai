@@ -33,11 +33,11 @@ export default function AdminDashboard() {
 
   // Live database states
   const [stats, setStats] = useState({
-    totalUsers: 0,
-    totalProjects: 0,
+    totalUsers: '0',
+    totalProjects: '0',
     totalRevenue: '₹0',
-    creditsSold: 0,
-    activeDeployments: 0,
+    creditsSold: '0',
+    activeDeployments: '0',
   });
   const [usersList, setUsersList] = useState([]);
   const [transactions, setTransactions] = useState([]);
@@ -60,12 +60,37 @@ export default function AdminDashboard() {
     setLoading(true);
     try {
       const res = await fetch(`${BACKEND_URL}/api/admin/dashboard-data`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.stats) setStats(data.stats);
-        if (data.users) setUsersList(data.users);
-        if (data.transactions) setTransactions(data.transactions);
-        if (data.creditPackages) setCreditPackages(data.creditPackages);
+      if (!res.ok) throw new Error(`Server returned HTTP ${res.status}`);
+      const data = await res.json();
+
+      // Maps both metrics & stats keys
+      const m = data.metrics || data.stats;
+      if (m) {
+        setStats({
+          totalUsers: m.totalUsers || '0',
+          totalProjects: m.totalProjects || '0',
+          totalRevenue: m.totalRevenue || '₹0',
+          creditsSold: m.creditsSold || '0',
+          activeDeployments: m.activeDeployments || '0',
+        });
+      }
+
+      if (data.users) setUsersList(data.users);
+      if (data.transactions) setTransactions(data.transactions);
+
+      // Maps both packages & creditPackages keys
+      const pkgs = data.packages || data.creditPackages;
+      if (pkgs && Array.isArray(pkgs)) {
+        setCreditPackages(
+          pkgs.map((p) => ({
+            id: p.id,
+            name: p.name,
+            price: `₹${p.priceInInr || p.priceVal || String(p.price || '').replace(/[^0-9]/g, '')}`,
+            priceVal: Number(p.priceInInr || p.priceVal || String(p.price || '').replace(/[^0-9]/g, '')),
+            credits: `${p.creditsVal || p.credits || ''}`.includes('Credits') ? p.credits : `${p.credits || p.creditsVal} Credits`,
+            creditsVal: Number(String(p.creditsVal || p.credits || '').replace(/[^0-9]/g, '')),
+          }))
+        );
       }
     } catch (err) {
       console.error('Error fetching admin data:', err);
@@ -87,71 +112,61 @@ export default function AdminDashboard() {
   };
 
   // Save Package Update Directly to PostgreSQL
-    const handleSavePackage = async (e) => {
+  const handleSavePackage = async (e) => {
     e.preventDefault();
     if (!selectedPkg) return;
     setSaveLoading(true);
 
-    // Normalize package ID: 'starter', 'builder', or 'pro'
-    const targetId = String(selectedPkg.id || selectedPkg.name)
-      .toLowerCase()
-      .split(' ')[0]
-      .trim();
+    const targetId = String(selectedPkg.id || selectedPkg.name).toLowerCase().split(' ')[0].trim();
+    const newPriceVal = Number(String(editPrice).replace(/[^0-9]/g, ''));
+    const newCreditsVal = Number(String(editCredits).replace(/[^0-9]/g, ''));
 
-    const numericPrice = Number(String(editPrice).replace(/[^0-9]/g, ''));
-    const numericCredits = Number(String(editCredits).replace(/[^0-9]/g, ''));
+    // Optimistic UI update
+    setCreditPackages((prev) =>
+      prev.map((pkg) => {
+        const currentId = String(pkg.id || pkg.name).toLowerCase().split(' ')[0].trim();
+        if (currentId === targetId) {
+          return {
+            ...pkg,
+            price: `₹${newPriceVal}`,
+            priceVal: newPriceVal,
+            credits: `${newCreditsVal} Credits`,
+            creditsVal: newCreditsVal,
+          };
+        }
+        return pkg;
+      })
+    );
 
     try {
-      const res = await fetch(`${BACKEND_URL}/api/admin/packages/update`, {
+      const res = await fetch(`${BACKEND_URL}/api/admin/packages/save`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          id: targetId,
           packageId: targetId,
-          price: numericPrice,
-          credits: numericCredits,
-          name: selectedPkg.name || targetId,
+          priceInInr: newPriceVal,
+          price: newPriceVal,
+          credits: newCreditsVal,
+          name: selectedPkg.name,
         }),
       });
 
-      const data = await res.json();
-
-      if (!res.ok || data.error) {
-        throw new Error(data.error || 'Server rejected database update');
+      const result = await res.json();
+      if (!res.ok || result.error) {
+        throw new Error(result.error || 'Failed to save to database');
       }
 
-      // Immediately update local card state
-      setCreditPackages((prevPackages) =>
-        prevPackages.map((item) => {
-          const currentId = String(item.id || item.name).toLowerCase().split(' ')[0].trim();
-          if (currentId === targetId) {
-            return {
-              ...item,
-              price: `₹${numericPrice}`,
-              priceVal: numericPrice,
-              credits: `${numericCredits} Credits`,
-              creditsVal: numericCredits,
-            };
-          }
-          return item;
-        })
-      );
-
       setShowPackageModal(false);
-      alert(`Success: Updated ${targetId.toUpperCase()} to ₹${numericPrice} and ${numericCredits} Credits!`);
-
-      // Refetch live database state
       await loadDashboardData();
     } catch (err) {
-      console.error('Save failed:', err);
-      alert(`Update failed: ${err.message}`);
+      console.error('Failed to update package:', err);
+      alert(`Could not save: ${err.message}`);
+      loadDashboardData();
     } finally {
       setSaveLoading(false);
     }
   };
-  
 
   // Grant Global Credits Handler
   const handleGlobalCreditGrant = async () => {
@@ -172,12 +187,12 @@ export default function AdminDashboard() {
   };
 
   // Adjust Specific User Credit Handler
-  const handleUserCreditAdjust = async (userId, delta) => {
+  const handleUserCreditAdjust = async (user, delta) => {
     try {
       const res = await fetch(`${BACKEND_URL}/api/admin/credits/adjust-user`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, delta }),
+        body: JSON.stringify({ email: user.email, userId: user.id, delta }),
       });
 
       if (res.ok) {
@@ -321,7 +336,7 @@ export default function AdminDashboard() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between">
               <span className="text-xs font-semibold text-slate-500">Total Users</span>
-              <p className="text-2xl font-black text-slate-900 my-2">{stats.totalUsers.toLocaleString()}</p>
+              <p className="text-2xl font-black text-slate-900 my-2">{stats.totalUsers}</p>
               <div className="flex items-center gap-1 text-[11px] font-bold text-emerald-600">
                 <TrendingUp className="w-3 h-3" />
                 <span>+12.5% this month</span>
@@ -330,7 +345,7 @@ export default function AdminDashboard() {
 
             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between">
               <span className="text-xs font-semibold text-slate-500">Total Projects</span>
-              <p className="text-2xl font-black text-slate-900 my-2">{stats.totalProjects.toLocaleString()}</p>
+              <p className="text-2xl font-black text-slate-900 my-2">{stats.totalProjects}</p>
               <div className="flex items-center gap-1 text-[11px] font-bold text-emerald-600">
                 <TrendingUp className="w-3 h-3" />
                 <span>+18.7% this month</span>
@@ -347,8 +362,8 @@ export default function AdminDashboard() {
             </div>
 
             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between">
-              <span className="text-xs font-semibold text-slate-500">Credits Balance (All)</span>
-              <p className="text-2xl font-black text-slate-900 my-2">{stats.creditsSold.toLocaleString()}</p>
+              <span className="text-xs font-semibold text-slate-500">Credits Sold</span>
+              <p className="text-2xl font-black text-slate-900 my-2">{stats.creditsSold}</p>
               <div className="flex items-center gap-1 text-[11px] font-bold text-emerald-600">
                 <TrendingUp className="w-3 h-3" />
                 <span>+16.3% this month</span>
@@ -536,7 +551,7 @@ export default function AdminDashboard() {
                     <th className="pb-2 font-medium">User</th>
                     <th className="pb-2 font-medium">Role</th>
                     <th className="pb-2 font-medium">Credits Left</th>
-                    <th className="pb-2 font-medium">Total Granted</th>
+                    <th className="pb-2 font-medium">Projects</th>
                     <th className="pb-2 font-medium text-right">Actions</th>
                   </tr>
                 </thead>
@@ -557,17 +572,17 @@ export default function AdminDashboard() {
                             {user.role || 'USER'}
                           </span>
                         </td>
-                        <td className="py-2.5 font-bold text-indigo-600">{user.credits ?? (user.freeBuildsTotal - user.freeBuildsUsed)}</td>
-                        <td className="py-2.5 text-slate-500">{user.freeBuildsTotal || 3}</td>
+                        <td className="py-2.5 font-bold text-indigo-600">{user.credits}</td>
+                        <td className="py-2.5 text-slate-500">{user.projectsCount ?? 0}</td>
                         <td className="py-2.5 text-right space-x-1.5">
                           <button
-                            onClick={() => handleUserCreditAdjust(user.id, 5)}
+                            onClick={() => handleUserCreditAdjust(user, 5)}
                             className="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-600 font-bold text-[11px] transition cursor-pointer"
                           >
                             +5 Credits
                           </button>
                           <button
-                            onClick={() => handleUserCreditAdjust(user.id, -5)}
+                            onClick={() => handleUserCreditAdjust(user, -5)}
                             className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold text-[11px] transition cursor-pointer"
                           >
                             -5 Credits
@@ -662,4 +677,4 @@ export default function AdminDashboard() {
       )}
     </div>
   );
-}
+}                    
