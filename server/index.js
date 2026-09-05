@@ -558,7 +558,28 @@ app.get('/api/auth/me', authenticate, (req, res) => {
 
 // ============================================================
 // 2. PROJECT CREATION & WORKSPACE ROUTES
+// ==========================================================
 // ============================================================
+// 2. PROJECT CREATION & WORKSPACE ROUTES
+// ============================================================
+
+// GET ALL PROJECTS FOR LOGGED-IN USER (Project History)
+app.get('/api/projects', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const projects = await prisma.project.findMany({
+      where: { userId },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    return res.json({ success: true, projects });
+  } catch (error) {
+    console.error('Fetch project history error:', error);
+    return res.status(500).json({ error: 'Failed to retrieve project history.' });
+  }
+});
+
+// CREATE PROJECT
 app.post('/api/projects', authenticate, async (req, res) => {
   try {
     const { name, description, type } = req.body;
@@ -589,6 +610,7 @@ app.post('/api/projects', authenticate, async (req, res) => {
   }
 });
 
+// GET SINGLE PROJECT BY ID
 app.get('/api/projects/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
@@ -609,6 +631,7 @@ app.get('/api/projects/:id', authenticate, async (req, res) => {
   }
 });
 
+// AI GENERATE CODE
 app.post('/api/generate/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
@@ -658,6 +681,7 @@ app.post('/api/generate/:id', authenticate, async (req, res) => {
   }
 });
 
+// CHAT ASSISTANT
 app.post('/api/chat/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
@@ -671,6 +695,7 @@ app.post('/api/chat/:id', authenticate, async (req, res) => {
   }
 });
 
+// UPDATE PROJECT VISIBILITY
 app.patch('/api/projects/:id/visibility', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
@@ -687,6 +712,7 @@ app.patch('/api/projects/:id/visibility', authenticate, async (req, res) => {
   }
 });
 
+// UPDATE PROJECT SEO
 app.patch('/api/projects/:id/seo', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
@@ -707,23 +733,34 @@ app.patch('/api/projects/:id/seo', authenticate, async (req, res) => {
   }
 });
 
+// DEPLOY PROJECT
 app.post('/api/deploy/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const project = await prisma.project.findUnique({ where: { id } });
     if (!project) return res.status(404).json({ error: 'Project not found.' });
 
-    const deployedUrl = `[https://webtoai.vercel.app/preview/$](https://webtoai.vercel.app/preview/$){project.slug || project.id}`;
-    await prisma.project.update({
+    const targetSlug = project.slug || project.id;
+    const deployedUrl = `https://webtoai.vercel.app/preview/${targetSlug}`;
+
+    const updatedProject = await prisma.project.update({
       where: { id },
-      data: { isDeployed: true, deployedUrl },
+      data: {
+        isDeployed: true,
+        deployedUrl,
+        updatedAt: new Date(),
+      },
     });
 
-    return res.json({ success: true, project, deployedUrl });
+    return res.json({ success: true, project: updatedProject, deployedUrl });
   } catch (err) {
+    console.error('Deploy error:', err);
     return res.status(500).json({ error: 'Deployment failed.' });
   }
 });
+
+
+
 
 // ============================================================
 // 3. ADMIN PANEL & MANAGEMENT
