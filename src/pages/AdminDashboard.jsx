@@ -178,6 +178,9 @@ export default function AdminDashboard() {
       if (!res.ok) throw new Error(`Status ${res.status}`);
       const data = await res.json();
 
+      // Console prints for live debugging
+      console.log('>>> [DASHBOARD] Fetched Live Data:', data);
+
       const s = data.stats || data.metrics;
       if (s) {
         setStats({
@@ -210,7 +213,7 @@ export default function AdminDashboard() {
         );
       }
     } catch (err) {
-      console.error('Data error:', err);
+      console.error('>>> [DASHBOARD ERROR]:', err);
       setErrorStatus(err.message || 'Failed to connect');
     } finally {
       setLoading(false);
@@ -439,7 +442,7 @@ export default function AdminDashboard() {
         )}
 
         <div className="p-4 sm:p-6 space-y-6 max-w-6xl mx-auto w-full">
-          {/* Top 3 Stat Cards (exactly matching video) */}
+          {/* Top 3 Stat Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
               <span className="text-xs font-medium text-slate-500">Total Users</span>
@@ -561,7 +564,7 @@ export default function AdminDashboard() {
             </div>
           </div>
 
-          {/* Dynamic Package & Pricing Editor (matching video) */}
+          {/* Dynamic Package & Pricing Editor */}
           <div className="space-y-3">
             <div>
               <h2 className="text-sm font-bold text-slate-900">Dynamic Package & Pricing Editor</h2>
