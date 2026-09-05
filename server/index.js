@@ -149,9 +149,20 @@ function cleanAndParseJSON(rawText) {
     } catch (fallbackErr) {
       console.error('[JSON PARSE RAW OUTPUT]:', cleaned.slice(0, 1000));
       throw new Error(`Failed to parse AI response: ${initialErr.message}`);
+      
     }
   }
 }
+const SYSTEM_PROMPT = `
+You are the Lead Full-Stack Software Architect and UI/UX Designer for WEBTO AI.
+Generate a complete, single-page full-stack web application based on the user's prompt.
+
+CRITICAL RULES:
+1. "entryHtml": MUST be a 100% complete, working HTML5 file with Tailwind CSS (<script src="https://cdn.tailwindcss.com"></script>) and FontAwesome 6 (<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />).
+2. Implement full interactive state in JavaScript (window.state, dynamic filters, interactive cart/counter actions, modal popups).
+3. "files": Provide an array of modular files ({ name, path, content }).
+4. Return ONLY a valid JSON object with keys "entryHtml" and "files". No markdown backticks.
+`;
 
 async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingCode = '', image = null) {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
@@ -242,6 +253,9 @@ async function generateProjectCode(prompt, projectType = 'FULL_STACK', existingC
   const textOutput = data.candidates?.[0]?.content?.parts?.[0]?.text;
   return cleanAndParseJSON(textOutput);
 }
+
+
+
 
 async function generateChatReply(projectName, projectType, messages) {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
